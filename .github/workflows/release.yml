@@ -22,19 +22,19 @@ jobs:
         include:
           - os: macos-latest
             arch: x64
-            build_cmd: npm run build:mac
+            build_cmd: npm run build:mac -- --publish never
           - os: macos-latest
             arch: arm64
-            build_cmd: npm run build:mac-arm64
+            build_cmd: npm run build:mac-arm64 -- --publish never
           - os: macos-latest
             arch: universal
-            build_cmd: npm run build:mac-universal
+            build_cmd: npm run build:mac-universal -- --publish never
           - os: ubuntu-latest
             arch: x64
-            build_cmd: npm run build:linux
+            build_cmd: npm run build:linux -- --publish never
           - os: windows-latest
             arch: x64
-            build_cmd: npm run build:win
+            build_cmd: npm run build:win -- --publish never
 
     runs-on: ${{ matrix.os }}
 
