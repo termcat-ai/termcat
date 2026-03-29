@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    environment: termcat_build
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            arch: x64
+            build_cmd: npm run build:mac
+          - os: macos-latest
+            arch: arm64
+            build_cmd: npm run build:mac-arm64
+          - os: macos-latest
+            arch: universal
+            build_cmd: npm run build:mac-universal
+          - os: ubuntu-latest
+            arch: x64
+            build_cmd: npm run build:linux
+          - os: windows-latest
+            arch: x64
+            build_cmd: npm run build:win
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python (for native modules)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install setuptools (provides distutils)
+        run: pip install setuptools
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create .env.production
+        run: |
+          echo "VITE_API_BASE_URL=${{ vars.VITE_API_BASE_URL }}" >> .env.production
+          echo "VITE_WS_BASE_URL=${{ vars.VITE_WS_BASE_URL }}" >> .env.production
+          echo "VITE_AUTH_URL=${{ vars.VITE_AUTH_URL }}" >> .env.production
+
+      - name: Build
+        run: ${{ matrix.build_cmd }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rename artifacts with TermCat-Community prefix
+        shell: bash
+        run: |
+          cd release
+          for f in TermCat-*; do
+            [ -e "$f" ] || continue
+            mv "$f" "TermCat-Community-${f#TermCat-}"
+          done
+          ls -la
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.msi
+            release/*.AppImage
+            release/*.deb
+            release/*.tar.xz
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts -type f | head -50
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

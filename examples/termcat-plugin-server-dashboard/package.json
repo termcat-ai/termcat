@@ -1,0 +1,43 @@
+{
+  "name": "termcat-plugin-server-dashboard",
+  "version": "1.0.0",
+  "description": "Server overview panel - external plugin example demonstrating UI contribution point template system",
+  "termcat": {
+    "displayName": "Server Dashboard",
+    "description": "Renders server overview panel using UI contribution point templates, demonstrating how external plugins use registerPanel / setPanelData",
+    "entry": "dist/extension.js",
+    "activationEvents": [
+      "onSSHConnect"
+    ],
+    "permissions": [
+      "terminal.read",
+      "ssh.exec",
+      "host.read",
+      "monitor.read"
+    ],
+    "contributes": {
+      "commands": [
+        {
+          "id": "serverDashboard.refresh",
+          "title": "Refresh Server Dashboard",
+          "icon": "refresh-cw"
+        }
+      ],
+      "settings": {
+        "serverDashboard.refreshInterval": {
+          "type": "number",
+          "default": 10,
+          "description": "Auto refresh interval (seconds)"
+        }
+      },
+      "i18n": {
+        "zh": {
+          "serverDashboard.refresh": "刷新服务器概览"
+        },
+        "en": {
+          "serverDashboard.refresh": "Refresh Server Dashboard"
+        }
+      }
+    }
+  }
+}

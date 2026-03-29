@@ -1,0 +1,59 @@
+{
+  "name": "termcat-plugin-git-status",
+  "version": "1.0.0",
+  "description": "Display Git branch and status on terminal tab",
+  "termcat": {
+    "displayName": "Git Status",
+    "description": "Display Git branch and status on terminal tab",
+    "entry": "dist/extension.js",
+    "activationEvents": [
+      "onSSHConnect"
+    ],
+    "permissions": [
+      "terminal.read",
+      "ssh.exec",
+      "host.read"
+    ],
+    "contributes": {
+      "commands": [
+        {
+          "id": "gitStatus.show",
+          "title": "Show Git Status",
+          "icon": "git-branch"
+        },
+        {
+          "id": "gitStatus.refresh",
+          "title": "Refresh Git Status",
+          "icon": "refresh"
+        }
+      ],
+      "menus": {
+        "terminal/toolbar": [
+          { "command": "gitStatus.refresh" }
+        ]
+      },
+      "settings": {
+        "gitStatus.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically fetch Git branch after SSH connection"
+        },
+        "gitStatus.refreshInterval": {
+          "type": "number",
+          "default": 30,
+          "description": "Auto refresh interval (seconds)"
+        }
+      },
+      "i18n": {
+        "zh": {
+          "gitStatus.show": "显示 Git 状态",
+          "gitStatus.refresh": "刷新 Git 状态"
+        },
+        "en": {
+          "gitStatus.show": "Show Git Status",
+          "gitStatus.refresh": "Refresh Git Status"
+        }
+      }
+    }
+  }
+}
