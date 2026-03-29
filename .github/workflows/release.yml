@@ -116,6 +116,15 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | head -50
 
+      - name: Clean up existing release assets
+        run: |
+          gh release view "${{ github.ref_name }}" --json assets -q '.assets[].name' 2>/dev/null | while read -r name; do
+            [ -n "$name" ] && gh release delete-asset "${{ github.ref_name }}" "$name" --yes
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
