@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      package_prefix:
+        description: 'Package name prefix (e.g. TermCat-Community, TermCat-Pro)'
+        required: true
+        default: 'TermCat-Community'
 
 permissions:
   contents: write
@@ -64,13 +70,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Rename artifacts with TermCat-Community prefix
+      - name: Rename artifacts
         shell: bash
+        env:
+          PREFIX: ${{ inputs.package_prefix || 'TermCat-Community' }}
         run: |
           cd release
-          for f in TermCat-*; do
+          for f in *.dmg *.zip *.exe *.msi *.AppImage *.deb *.tar.xz; do
             [ -e "$f" ] || continue
-            mv "$f" "TermCat-Community-${f#TermCat-}"
+            # Strip original TermCat/termcat prefix (with separator - _ or space)
+            suffix="${f#TermCat[- _]}"
+            suffix="${suffix#termcat[- _]}"
+            mv "$f" "${PREFIX}-${suffix}"
           done
           ls -la
 
