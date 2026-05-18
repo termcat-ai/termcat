@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { FileItem, TransferItem, ThemeType } from '@/utils/types';
 import { SSHFsHandler } from '@/core/terminal/SSHFsHandler';
 import type { IFsHandler, DirectoryNode } from '@/core/terminal/IFsHandler';
@@ -13,6 +13,7 @@ import { FileTreePanel } from './FileTreePanel';
 import { FileListPanel } from './FileListPanel';
 import { builtinPluginManager } from '@/plugins/builtin/builtin-plugin-manager';
 import { FILE_BROWSER_EVENTS } from '@/plugins/builtin/events';
+import { createPathOps } from '../pathUtils';
 
 interface FileBrowserPanelProps {
   connectionId: string | null;
@@ -46,6 +47,14 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
   /** Incremented when proxy handler switches (nested SSH enter/exit), triggers re-sync */
   const [handlerSwitchCount, setHandlerSwitchCount] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Local Windows terminals use drive letters + '\' separators. SSH is
+  // always POSIX. Detected once the fs handler is known.
+  const [isWin, setIsWin] = useState(false);
+  // True once the async root probe has resolved. Path loading must wait for
+  // this so pathOps (POSIX vs Windows) is correct before any path is built.
+  const [rootsProbed, setRootsProbed] = useState(false);
+  const pathOps = useMemo(() => createPathOps(isWin), [isWin]);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(INITIAL_MENU_STATE);
@@ -111,9 +120,46 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
     };
   }, [fsHandlerProp, connectionId]);
 
-  // When file tab becomes visible or handler switches, sync terminal directory
+  // Probe filesystem roots to decide layout. Windows-local handlers return
+  // drive nodes (C:\, D:\ ...). SSH / POSIX handlers either lack getRoots()
+  // (the proxy rejects) or return a single '/' — both mean POSIX layout.
+  const detectedRootsRef = useRef<DirectoryNode[] | null>(null);
   useEffect(() => {
-    if (isVisible && fileBrowserRef) {
+    let cancelled = false;
+    detectedRootsRef.current = null;
+    setRootsProbed(false);
+    const getRoots = (fileBrowserRef as any)?.getRoots;
+    if (fileBrowserRef && typeof getRoots === 'function') {
+      Promise.resolve(getRoots.call(fileBrowserRef))
+        .then((roots: DirectoryNode[]) => {
+          if (cancelled) return;
+          const isDrives = Array.isArray(roots) && roots.length > 0 &&
+            roots.every(r => /^[A-Za-z]:[\\/]?$/.test(r.path));
+          detectedRootsRef.current = isDrives ? roots : null;
+          setIsWin(isDrives);
+        })
+        .catch(() => { if (!cancelled) setIsWin(false); })
+        .finally(() => {
+          if (cancelled) return;
+          // Layout is now known. Discard anything an effect-ordering race
+          // may have loaded early with the wrong (POSIX) path semantics and
+          // force a clean rebuild + path re-sync.
+          isInitialPathSyncedRef.current = false;
+          setIsDirectoryTreeLoaded(false);
+          setRootsProbed(true);
+        });
+    } else {
+      setIsWin(false);
+      setRootsProbed(true);
+    }
+    return () => { cancelled = true; };
+  }, [fileBrowserRef, handlerSwitchCount]);
+
+  // When file tab becomes visible or handler switches, sync terminal directory.
+  // Waits for rootsProbed so pathOps is correct (Windows vs POSIX) before any
+  // path is built — otherwise expandTreeToPath merges the wrong root.
+  useEffect(() => {
+    if (isVisible && fileBrowserRef && rootsProbed) {
       if (!isInitialPathSyncedRef.current) {
         isInitialPathSyncedRef.current = true;
         // Get initial path via fsHandler.getInitialPath() (SSH: sshPwd, Local: homedir)
@@ -129,14 +175,15 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
         loadFiles(currentPath);
       }
     }
-  }, [isVisible, fileBrowserRef, connectionId, handlerSwitchCount]);
+  }, [isVisible, fileBrowserRef, connectionId, handlerSwitchCount, rootsProbed]);
 
-  // Directory tree loading (independent from file list loading, avoid triggering file list reload)
+  // Directory tree loading (independent from file list loading, avoid triggering file list reload).
+  // Also waits for rootsProbed so the Windows drive nodes are available.
   useEffect(() => {
-    if (isVisible && fileBrowserRef && !isDirectoryTreeLoaded) {
+    if (isVisible && fileBrowserRef && rootsProbed && !isDirectoryTreeLoaded) {
       loadDirectoryTree();
     }
-  }, [isVisible, fileBrowserRef, isDirectoryTreeLoaded]);
+  }, [isVisible, fileBrowserRef, rootsProbed, isDirectoryTreeLoaded]);
 
   // Add global drag event listeners
   useEffect(() => {
@@ -176,16 +223,18 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
    * For path segments not in the tree, lazy-load subdirectories level by level.
    */
   const expandTreeToPath = useCallback(async (targetPath: string) => {
-    if (targetPath === '/' || !fileBrowserRef) return;
+    if (!fileBrowserRef || pathOps.atTop(targetPath)) return;
 
-    // Decompose path into level-by-level prefixes: /a/b/c → ['/a', '/a/b', '/a/b/c']
-    const parts = targetPath.split('/').filter(Boolean);
-    const ancestorPaths = parts.map((_, i) => '/' + parts.slice(0, i + 1).join('/'));
+    // Level-by-level ancestor paths.
+    //   POSIX:   /a/b/c → ['/a', '/a/b', '/a/b/c']
+    //   Windows: C:\a\b → ['C:\', 'C:\a', 'C:\a\b']
+    const ancestorPaths = pathOps.ancestors(targetPath);
+    const posixRoot = !pathOps.isWin;
 
     const findNode = (nodes: DirectoryNode[], path: string): DirectoryNode | null => {
       for (const n of nodes) {
         if (n.path === path) return n;
-        if (n.children && path.startsWith(n.path + '/')) {
+        if (n.children && n.path !== path && pathOps.isAncestorOrSelf(n.path, path)) {
           const found = findNode(n.children, path);
           if (found) return found;
         }
@@ -218,14 +267,18 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
               merged.sort((a, b) => a.name.localeCompare(b.name));
               return { ...n, open: true, children: merged };
             }
-            if (n.children && parentPath.startsWith(n.path + '/')) {
+            if (n.children && n.path !== parentPath && pathOps.isAncestorOrSelf(n.path, parentPath)) {
               return { ...n, children: insertChildren(n.children) };
             }
             return n;
           });
 
-        if (parentPath === '/') {
-          // 根级别：合并到顶层
+        // POSIX only: '/' children ARE the tree top level. On Windows even
+        // a drive root (C:\) is a normal node, so always use insertChildren.
+        // Safety net: never merge into a tree that already holds drive nodes,
+        // even if isWin is briefly stale during an effect-ordering race.
+        const treeHasDrives = currentTree.some(n => /^[A-Za-z]:[\\/]?$/.test(n.path));
+        if (posixRoot && parentPath === '/' && !treeHasDrives) {
           const existingNames = new Set(currentTree.map(c => c.name));
           const merged = [...currentTree];
           for (const child of children) {
@@ -244,7 +297,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
     setDirectoryTree(prev => {
       const expandAncestors = (nodes: DirectoryNode[]): DirectoryNode[] =>
         nodes.map(n => {
-          const isAncestor = targetPath === n.path || targetPath.startsWith(n.path + '/');
+          const isAncestor = pathOps.isAncestorOrSelf(n.path, targetPath);
           const children = n.children ? expandAncestors(n.children) : n.children;
           if (isAncestor && !n.open) return { ...n, open: true, children };
           if (children !== n.children) return { ...n, children };
@@ -252,7 +305,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
         });
       return expandAncestors(prev);
     });
-  }, [fileBrowserRef, loadChildrenForNode]);
+  }, [fileBrowserRef, loadChildrenForNode, pathOps]);
 
   const loadFiles = useCallback(async (path: string) => {
     if (!fileBrowserRef) return;
@@ -276,8 +329,33 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
     if (!fileBrowserRef) return;
     try {
       setIsLoadingTree(true);
-      // Only load direct subdirectories of root directory (depth=1), lazy load subsequent on demand
-      const tree = await fileBrowserRef.getDirectoryTree('/', 1);
+
+      // Authoritative layout decision: fetch roots ourselves so the tree is
+      // always correct regardless of probe-effect timing.
+      //   Windows-local → getRoots() returns drive nodes (C:\, D:\, ...).
+      //   SSH / POSIX    → getRoots() absent/rejects → '/' subdirectories.
+      let tree: DirectoryNode[] | null = null;
+      const getRoots = (fileBrowserRef as any).getRoots;
+      if (typeof getRoots === 'function') {
+        try {
+          const roots = await getRoots.call(fileBrowserRef);
+          const isDrives = Array.isArray(roots) && roots.length > 0 &&
+            roots.every((r: DirectoryNode) => /^[A-Za-z]:[\\/]?$/.test(r.path));
+          if (isDrives) {
+            detectedRootsRef.current = roots;
+            setIsWin(true);
+            tree = roots;
+          }
+        } catch {
+          // not a drive-based handler → fall through to POSIX
+        }
+      }
+      if (!tree) {
+        detectedRootsRef.current = null;
+        setIsWin(false);
+        tree = await fileBrowserRef.getDirectoryTree('/', 1);
+      }
+
       setDirectoryTree(tree);
       setIsDirectoryTreeLoaded(true);
       logger.debug(LOG_MODULE.FILE, 'filebrowser.tree.loaded', 'Loaded root directory tree', { count: tree.length });
@@ -357,10 +435,9 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
   const handleFileDoubleClick = useCallback(async (file: FileItem) => {
     const cp = currentPathRef.current;
     if (file.isDir) {
-      const newPath = cp === '/' ? `/${file.name}` : `${cp}/${file.name}`;
-      loadFiles(newPath);
+      loadFiles(pathOps.join(cp, file.name));
     } else if (fileBrowserRef) {
-      const remotePath = cp === '/' ? `/${file.name}` : `${cp}/${file.name}`;
+      const remotePath = pathOps.join(cp, file.name);
       try {
         const content = await fileBrowserRef.readFileForEdit(remotePath);
         setEditorState({ remotePath, content });
@@ -369,13 +446,13 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
         alert(t.editor.loadFailed.replace('{error}', error?.message || 'Unknown error'));
       }
     }
-  }, [fileBrowserRef, loadFiles, t]);
+  }, [fileBrowserRef, loadFiles, t, pathOps]);
 
   /** Emit transfer record event, for TransferManager to display */
   const emitTransfer = useCallback((transferId: string, type: 'upload' | 'download', localPath: string, remotePath: string) => {
     // Local copy (transferId starts with local-copy) is already completed synchronously, directly mark as completed
     const isLocal = transferId.startsWith('local-copy');
-    const name = remotePath.split('/').pop() || 'transfer';
+    const name = remotePath.split(/[\\/]/).pop() || 'transfer';
     builtinPluginManager.emit(FILE_BROWSER_EVENTS.TRANSFER_START, {
       id: transferId,
       name,
@@ -394,10 +471,9 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
 
   const handleGoToParent = useCallback(() => {
     const cp = currentPathRef.current;
-    if (cp === '/') return;
-    const parentPath = cp.substring(0, cp.lastIndexOf('/')) || '/';
-    loadFiles(parentPath);
-  }, [loadFiles]);
+    if (pathOps.atTop(cp)) return;
+    loadFiles(pathOps.parent(cp));
+  }, [loadFiles, pathOps]);
 
   const handleSyncTerminalPath = useCallback(async () => {
     if (!fileBrowserRef) return;
@@ -407,9 +483,12 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
         ? await fileBrowserRef.getTerminalCwd()
         : await fileBrowserRef.getInitialPath();
 
-      if (pwd && pwd.startsWith('/')) {
+      // Accept POSIX ('/...') and Windows ('C:\...' / 'C:/...') absolute paths.
+      if (pwd && (pwd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(pwd))) {
         loadFiles(pwd);
         logger.info(LOG_MODULE.FILE, 'filebrowser.sync_terminal_path', 'Synced path from terminal', { pwd });
+      } else {
+        logger.warn(LOG_MODULE.FILE, 'filebrowser.sync_terminal_path.invalid', 'Terminal cwd unavailable or not absolute', { pwd });
       }
     } catch (error) {
       logger.error(LOG_MODULE.FILE, 'filebrowser.sync_terminal_path.failed', 'Failed to sync terminal path', {
@@ -516,7 +595,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
           continue;
         }
 
-        const remoteDirPath = `${targetPath}/${rootDir}`;
+        const remoteDirPath = pathOps.join(targetPath, rootDir);
         const transferId = await fileBrowserRef!.uploadDirectory(localDirPath as string, remoteDirPath);
         emitTransfer(transferId, 'upload', localDirPath as string, remoteDirPath);
         logger.debug(LOG_MODULE.FILE, 'filebrowser.upload.dir_started', 'Directory transfer started', { transferId });
@@ -541,7 +620,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
       }
 
       try {
-        const remotePath = `${targetPath}/${file.name}`;
+        const remotePath = pathOps.join(targetPath, file.name);
         const transferId = await fileBrowserRef!.uploadFile(localPath, remotePath);
         emitTransfer(transferId, 'upload', localPath, remotePath);
         logger.debug(LOG_MODULE.FILE, 'filebrowser.file.started', 'File transfer started', { transferId });
@@ -569,7 +648,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
     } else {
       await handleFileDrop(droppedFiles, currentPathRef.current);
     }
-  }, [fileBrowserRef]);
+  }, [fileBrowserRef, pathOps]);
 
   const handleDragOver = useCallback((target: 'tree' | 'list') => setDragOver(target), []);
   const handleDragLeave = useCallback(() => setDragOver(null), []);
@@ -580,7 +659,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
     if (!fileBrowserRef) return;
     try {
       const cp = currentPathRef.current;
-      const remotePath = cp === '/' ? `/${file.name}` : `${cp}/${file.name}`;
+      const remotePath = pathOps.join(cp, file.name);
       const result = await (window as any).electron.showSaveDialog({
         title: t.dialogs.chooseSaveLocation,
         defaultPath: file.name,
@@ -597,7 +676,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
     } catch (error: any) {
       logger.error(LOG_MODULE.FILE, 'Download error:', error);
     }
-  }, [fileBrowserRef, emitTransfer, t]);
+  }, [fileBrowserRef, emitTransfer, t, pathOps]);
 
   const handleUploadClick = useCallback(async () => {
     if (!fileBrowserRef) return;
@@ -610,12 +689,12 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
       if (result.canceled || !result.filePaths || result.filePaths.length === 0) return;
 
       for (const localPath of result.filePaths) {
-        const isDirectory = !localPath.endsWith('/') && !/\.[a-zA-Z0-9]+$/.test(localPath.split('/').pop() || '');
-        const pathParts = localPath.split('/');
-        const name = isDirectory
-          ? (pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2])
-          : (localPath.split('/').pop() || '');
-        const remoteDirPath = `${currentPathRef.current}/${name}`;
+        // Dialog returns native OS paths — split on both separators.
+        const segs = localPath.split(/[\\/]/).filter(Boolean);
+        const baseName = segs[segs.length - 1] || '';
+        const isDirectory = !localPath.endsWith('/') && !localPath.endsWith('\\') && !/\.[a-zA-Z0-9]+$/.test(baseName);
+        const name = isDirectory ? (baseName || segs[segs.length - 2] || '') : baseName;
+        const remoteDirPath = pathOps.join(currentPathRef.current, name);
 
         try {
           const transferId = isDirectory
@@ -631,7 +710,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
     } catch (error: any) {
       logger.error(LOG_MODULE.FILE, 'Open dialog error:', error);
     }
-  }, [fileBrowserRef, loadFiles, t]);
+  }, [fileBrowserRef, loadFiles, t, pathOps]);
 
   const selectedFilesRef = useRef(selectedFiles);
   selectedFilesRef.current = selectedFiles;
@@ -665,7 +744,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
     for (const fileName of curSelectedFiles) {
       const file = curFiles.find(f => f.name === fileName);
       if (!file) continue;
-      const remotePath = cp === '/' ? `/${file.name}` : `${cp}/${file.name}`;
+      const remotePath = pathOps.join(cp, file.name);
       const localPath = curSelectedFiles.size === 1 ? targetDirectory! : `${targetDirectory}/${file.name}`;
       try {
         const transferId = file.isDir
@@ -679,7 +758,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
       }
     }
     setSelectedFiles(new Set());
-  }, [fileBrowserRef, t]);
+  }, [fileBrowserRef, t, pathOps]);
 
   // ─── Selection ───
 
@@ -709,11 +788,11 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
   const handleFileDragStart = useCallback((e: React.DragEvent, file: FileItem) => {
     e.dataTransfer.effectAllowed = 'copy';
     const cp = currentPathRef.current;
-    const remotePath = cp === '/' ? `/${file.name}` : `${cp}/${file.name}`;
+    const remotePath = pathOps.join(cp, file.name);
     e.dataTransfer.setData('remote-file', JSON.stringify({
       remotePath, fileName: file.name, isDir: file.isDir, connectionId
     }));
-  }, [connectionId]);
+  }, [connectionId, pathOps]);
 
   // ─── Context menu ───
 
@@ -754,7 +833,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
       case 'open':
       case 'open-with-editor': {
         if (!file || file.isDir || !fileBrowserRef) break;
-        const openPath = targetPath === '/' ? `/${file.name}` : `${targetPath}/${file.name}`;
+        const openPath = pathOps.join(targetPath, file.name);
         try {
           const content = await fileBrowserRef.readFileForEdit(openPath);
           setEditorState({ remotePath: openPath, content });
@@ -766,9 +845,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
         break;
       }
       case 'copy-path': {
-        const fullPath = file
-          ? (targetPath === '/' ? `/${file.name}` : `${targetPath}/${file.name}`)
-          : targetPath;
+        const fullPath = file ? pathOps.join(targetPath, file.name) : targetPath;
         try { await navigator.clipboard.writeText(fullPath); } catch { /* fallback */ }
         break;
       }
@@ -817,9 +894,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
       case 'rename': {
         if (!file || !fileBrowserRef) break;
         // Tree node: targetPath is the node's own path, need to get parent directory
-        const renameDir = source === 'tree'
-          ? (targetPath.substring(0, targetPath.lastIndexOf('/')) || '/')
-          : targetPath;
+        const renameDir = source === 'tree' ? pathOps.parent(targetPath) : targetPath;
         setInputDialog({
           title: t.inputPrompt.renameTo,
           defaultValue: file.name,
@@ -904,7 +979,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
         logger.info(LOG_MODULE.FILE, 'file.menu_action', 'Menu action', { actionId, file: file?.name });
         break;
     }
-  }, [closeContextMenu, currentPath, fileBrowserRef, loadFiles, loadDirectoryTree, handleDownload, handleUploadClick, t]);
+  }, [closeContextMenu, currentPath, fileBrowserRef, loadFiles, loadDirectoryTree, handleDownload, handleUploadClick, t, pathOps]);
 
   const handlePermissionConfirm = useCallback(async (octal: string) => {
     if (!permissionModalFile || !fileBrowserRef) return;
@@ -964,6 +1039,7 @@ export const FileBrowserPanel: React.FC<FileBrowserPanelProps> = ({
         <FileTreePanel
           directoryTree={directoryTree}
           selectedTreePath={selectedTreePath}
+          isWin={isWin}
           isLoadingTree={isLoadingTree}
           dragOver={dragOver}
           onNodeClick={handleTreeNodeClick}

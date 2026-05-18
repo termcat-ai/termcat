@@ -9,6 +9,7 @@ interface TreeNodeProps {
   node: DirectoryNode;
   level: number;
   selectedTreePath: string;
+  isWin: boolean;
   onNodeClick: (path: string) => void;
   onToggle: (node: DirectoryNode) => void;
   onDrop: (e: React.DragEvent, targetPath: string) => void;
@@ -19,13 +20,17 @@ interface TreeNodeProps {
 }
 
 const TreeNode: React.FC<TreeNodeProps> = React.memo(({
-  node, level, selectedTreePath, onNodeClick, onToggle, onDrop, dragOver, onDragOver, onDragLeave, onContextMenu
+  node, level, selectedTreePath, isWin, onNodeClick, onToggle, onDrop, dragOver, onDragOver, onDragLeave, onContextMenu
 }) => {
   // All nodes in directory tree are directories, always show expand arrow (children may not be loaded yet)
   const hasLoadedChildren = node.children && node.children.length > 0;
   const isSelected = selectedTreePath === node.path;
-  // Current node is ancestor of selected path (path highlight breadcrumb effect)
-  const isAncestor = !isSelected && selectedTreePath.startsWith(node.path + '/');
+  // Current node is ancestor of selected path (path highlight breadcrumb effect).
+  // Separator-agnostic so Windows drive paths (C:\) highlight correctly.
+  const nodeBase = node.path.replace(/[\\/]+$/, '');
+  const isAncestor = !isSelected && (
+    selectedTreePath.startsWith(nodeBase + '/') || selectedTreePath.startsWith(nodeBase + '\\')
+  );
 
   return (
     <div>
@@ -71,6 +76,7 @@ const TreeNode: React.FC<TreeNodeProps> = React.memo(({
               node={child}
               level={level + 1}
               selectedTreePath={selectedTreePath}
+              isWin={isWin}
               onNodeClick={onNodeClick}
               onToggle={onToggle}
               onDrop={onDrop}
@@ -89,6 +95,7 @@ const TreeNode: React.FC<TreeNodeProps> = React.memo(({
 export interface FileTreePanelProps {
   directoryTree: DirectoryNode[];
   selectedTreePath: string;
+  isWin: boolean;
   isLoadingTree: boolean;
   dragOver: 'tree' | 'list' | null;
   onNodeClick: (path: string) => void;
@@ -101,7 +108,7 @@ export interface FileTreePanelProps {
 }
 
 export const FileTreePanel: React.FC<FileTreePanelProps> = React.memo(({
-  directoryTree, selectedTreePath, isLoadingTree, dragOver,
+  directoryTree, selectedTreePath, isWin, isLoadingTree, dragOver,
   onNodeClick, onToggle, onRefresh, onDrop, onDragOver, onDragLeave, onContextMenu
 }) => {
   const t = useT();
@@ -138,25 +145,29 @@ export const FileTreePanel: React.FC<FileTreePanelProps> = React.memo(({
           </div>
         ) : (
           <div className="py-2">
-            {/* Root directory node — always ancestor on path, unified golden highlight */}
-            <div
-              className={`relative flex items-center gap-1 px-2 py-1 cursor-pointer transition-colors hover:bg-white/[0.04] ${dragOver === 'tree' ? 'bg-indigo-500/10' : ''}`}
-              onClick={() => onNodeClick('/')}
-              onContextMenu={(e) => onContextMenu(e, { name: '/', path: '/' })}
-              onDrop={(e) => onDrop(e, '/')}
-              onDragOver={(e) => { e.preventDefault(); onDragOver('tree'); }}
-              onDragLeave={onDragLeave}
-            >
-              <Folder className="w-3.5 h-3.5 shrink-0 text-amber-400" />
-              <span className="text-xs truncate flex-1 font-semibold text-amber-300/90">/</span>
-            </div>
-            {/* Subdirectories */}
+            {/* POSIX root node. On Windows the top level is the drive list
+                (C:\, D:\, ...), so no single '/' root is shown. */}
+            {!isWin && (
+              <div
+                className={`relative flex items-center gap-1 px-2 py-1 cursor-pointer transition-colors hover:bg-white/[0.04] ${dragOver === 'tree' ? 'bg-indigo-500/10' : ''}`}
+                onClick={() => onNodeClick('/')}
+                onContextMenu={(e) => onContextMenu(e, { name: '/', path: '/' })}
+                onDrop={(e) => onDrop(e, '/')}
+                onDragOver={(e) => { e.preventDefault(); onDragOver('tree'); }}
+                onDragLeave={onDragLeave}
+              >
+                <Folder className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                <span className="text-xs truncate flex-1 font-semibold text-amber-300/90">/</span>
+              </div>
+            )}
+            {/* Subdirectories (Windows: drive nodes) */}
             {directoryTree.map((node) => (
               <TreeNode
                 key={node.path}
                 node={node}
                 level={0}
                 selectedTreePath={selectedTreePath}
+                isWin={isWin}
                 onNodeClick={onNodeClick}
                 onToggle={onToggle}
                 onDrop={onDrop}

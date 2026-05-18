@@ -365,6 +365,7 @@ contextBridge.exposeInMainWorld('electron', {
     pack: (dir: string, fileNames: string[]) => ipcRenderer.invoke('local-fs-pack', dir, fileNames),
     removeTempFile: (path: string) => ipcRenderer.invoke('local-fs-remove-temp', path),
     getHomedir: () => ipcRenderer.invoke('local-fs-homedir'),
+    getDrives: () => ipcRenderer.invoke('local-fs-drives'),
     copyFile: (src: string, dest: string) => ipcRenderer.invoke('local-fs-copy-file', src, dest),
     copyDir: (src: string, dest: string) => ipcRenderer.invoke('local-fs-copy-dir', src, dest),
   },
@@ -571,6 +572,7 @@ declare global {
         pack: (dir: string, fileNames: string[]) => Promise<string>;
         removeTempFile: (path: string) => Promise<void>;
         getHomedir: () => Promise<string>;
+        getDrives: () => Promise<{ name: string; path: string }[]>;
         copyFile: (src: string, dest: string) => Promise<string>;
         copyDir: (src: string, dest: string) => Promise<string>;
       };

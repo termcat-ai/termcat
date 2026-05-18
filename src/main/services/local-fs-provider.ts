@@ -154,6 +154,32 @@ export class LocalFsProvider {
     return os.homedir();
   }
 
+  /**
+   * List filesystem roots.
+   * - Windows: every available logical drive (C:\, D:\, ...).
+   * - POSIX: a single '/' root.
+   */
+  async getDrives(): Promise<{ name: string; path: string }[]> {
+    if (process.platform !== 'win32') {
+      return [{ name: '/', path: '/' }];
+    }
+    const drives: { name: string; path: string }[] = [];
+    const probes = [];
+    for (let c = 65; c <= 90; c++) {
+      const letter = String.fromCharCode(c);
+      const root = `${letter}:\\`;
+      probes.push(
+        fs.promises.access(root).then(
+          () => { drives.push({ name: `${letter}:`, path: root }); },
+          () => { /* drive not present */ },
+        ),
+      );
+    }
+    await Promise.all(probes);
+    drives.sort((a, b) => a.name.localeCompare(b.name));
+    return drives;
+  }
+
   // ── Private ──
 
   private statsToFileItem(name: string, stats: fs.Stats): FileItem {

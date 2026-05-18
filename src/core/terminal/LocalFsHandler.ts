@@ -86,6 +86,16 @@ export class LocalFsHandler implements IFsHandler {
     return window.electron.localFs.getHomedir();
   }
 
+  /**
+   * Filesystem roots. On Windows this is the list of logical drives so the
+   * directory tree can show real drive nodes (C:\, D:\, ...) instead of
+   * Node resolving '/' to the current drive only.
+   */
+  async getRoots(): Promise<DirectoryNode[]> {
+    const drives = await window.electron.localFs.getDrives();
+    return drives.map(d => ({ name: d.name, path: d.path, children: [] }));
+  }
+
   async getTerminalCwd(): Promise<string | null> {
     if (!this.connectionId) return null;
     try {

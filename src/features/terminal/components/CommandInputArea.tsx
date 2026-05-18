@@ -83,6 +83,21 @@ export const CommandInputArea = forwardRef<CommandInputAreaRef, CommandInputArea
   const [currentDirectory, setCurrentDirectory] = useState<string>(initialDirectory);
   const [fileListCache, setFileListCache] = useState<string[]>([]);
 
+  // Local terminal platform info. Windows path handling (drive letters,
+  // backslash separators, Git-Bash MSYS paths) differs from POSIX.
+  const [isWindows, setIsWindows] = useState(false);
+  const [localHomeDir, setLocalHomeDir] = useState<string>('');
+
+  useEffect(() => {
+    if (!isLocal || !window.electron) return;
+    (window.electron as any).getPlatform?.()
+      .then((p: string) => setIsWindows(p === 'win32'))
+      .catch(() => {});
+    (window.electron as any).localFs?.getHomedir?.()
+      .then((h: string) => { if (h) setLocalHomeDir(h); })
+      .catch(() => {});
+  }, [isLocal]);
+
   // History panel selection state
   const [selectedHistoryIndex, setSelectedHistoryIndex] = useState(-1);
 
@@ -366,6 +381,87 @@ logger.debug(LOG_MODULE.TERMINAL, 'terminal.prompt.detected', 'Prompt detected',
     };
   }, [connectionId]);
 
+  // Local terminal: parse the current working directory from the shell prompt.
+  // Local PTY output arrives via localTerminal.onData (a different IPC channel
+  // than SSH's onShellData), so the SSH parser above never sees it. Supports
+  // Windows PowerShell / cmd / Git-Bash and POSIX (macOS / Linux) shells.
+  useEffect(() => {
+    const localTerm = (window.electron as any)?.localTerminal;
+    if (!isLocal || !connectionId || !localTerm?.onData) return;
+
+    let buf = '';
+
+    const stripAnsi = (s: string): string =>
+      s
+        // OSC sequences (window title, etc.) — Git-Bash emits the cwd here too
+        .replace(/\x1b\][0-9]*;[^\x07\x1b]*(?:\x07|\x1b\\)?/g, '')
+        // CSI / private mode sequences
+        .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+        // Remaining control chars except newline/tab
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+        .replace(/\r/g, '');
+
+    const unsub = localTerm.onData((ptyId: string, data: string) => {
+      if (ptyId !== connectionId) return;
+
+      buf = (buf + data).slice(-1500);
+      const clean = stripAnsi(buf);
+      const lines = clean.split('\n');
+      const last = lines[lines.length - 1] || '';
+      const prev = lines.length > 1 ? lines[lines.length - 2] : '';
+
+      let detected: string | null = null;
+
+      // PowerShell: "PS C:\path>"
+      let m = last.match(/PS\s+([A-Za-z]:\\[^\n>]*?)\s*>\s*$/) ||
+              prev.match(/PS\s+([A-Za-z]:\\[^\n>]*?)\s*>\s*$/);
+      if (m) detected = m[1];
+
+      // cmd.exe: "C:\path>"
+      if (!detected) {
+        m = last.match(/(?:^|\n)\s*([A-Za-z]:\\[^\n>]*?)\s*>\s*$/) ||
+            prev.match(/(?:^|\n)\s*([A-Za-z]:\\[^\n>]*?)\s*>\s*$/);
+        if (m) detected = m[1];
+      }
+
+      // Git-Bash / MSYS: "user@host MINGW64 /c/path" or "... MINGW64 ~"
+      if (!detected) {
+        m = last.match(/(?:MINGW|MSYS|UCRT|CLANG)\d*\s+(~|\/[^\s]*?)\s*$/) ||
+            prev.match(/(?:MINGW|MSYS|UCRT|CLANG)\d*\s+(~|\/[^\s]*?)\s*$/);
+        if (m) {
+          const raw = m[1];
+          if (raw === '~') detected = localHomeDir || '~';
+          else if (/^\/[A-Za-z]\//.test(raw) || /^\/[A-Za-z]$/.test(raw)) detected = msysToWin(raw);
+          else detected = raw;
+        }
+      }
+
+      // POSIX local (macOS / Linux): "user@host:/path$" or "/path$" / "~$"
+      if (!detected && !isWindows) {
+        m = last.match(/[\w.-]+@[\w.-]+:([~/][^\s$#]*)[$#]\s*$/) ||
+            prev.match(/[\w.-]+@[\w.-]+:([~/][^\s$#]*)[$#]\s*$/);
+        if (!m) {
+          m = last.match(/(^|\s)([~/][^\s$#]*)\s*[$#]\s*$/) ||
+              prev.match(/(^|\s)([~/][^\s$#]*)\s*[$#]\s*$/);
+          if (m) m = [m[0], m[2]] as RegExpMatchArray;
+        }
+        if (m) {
+          let p = m[1];
+          if (p === '~' || p.startsWith('~/')) p = (localHomeDir || '') + p.slice(1);
+          detected = p;
+        }
+      }
+
+      if (detected && detected !== currentDirectory) {
+        logger.debug(LOG_MODULE.TERMINAL, 'terminal.local.cwd_parsed', 'Parsed local cwd from prompt', { detected, isWindows });
+        setCurrentDirectory(detected);
+        buf = '';
+      }
+    });
+
+    return () => { unsub(); };
+  }, [isLocal, isWindows, connectionId, localHomeDir, currentDirectory]);
+
   // Expose methods to parent component
   useImperativeHandle(ref, () => ({
     focus: () => {
@@ -510,6 +606,11 @@ logger.debug(LOG_MODULE.TERMINAL, 'terminal.prompt.detected', 'Prompt detected',
 
   // Parse input path, return target directory and filename prefix
   const parseInputPath = (inputPath: string, currentDir: string): { directory: string; prefix: string } => {
+    // Local terminals (Windows / macOS / Linux) use platform-aware parsing.
+    if (isLocal) {
+      return parseLocalInputPath(inputPath, currentDir);
+    }
+
     // If current directory is empty, use root as default (but this should not happen)
     let effectiveCurrentDir = currentDir || '/';
 
@@ -644,6 +745,111 @@ const tildeMatch = currentFromState.match(/^~([a-z_][a-z0-9_-]*)/i);
     }
   };
 
+  // ── Local terminal path helpers (Windows / Git-Bash / POSIX) ──
+
+  // Convert an MSYS / Git-Bash style path (/c/Users/x) to a native
+  // Windows path (C:\Users\x). Non-MSYS paths are returned unchanged.
+  const msysToWin = (p: string): string => {
+    const m = p.match(/^\/([A-Za-z])(\/.*)?$/);
+    if (m) return `${m[1].toUpperCase()}:${(m[2] || '\\').replace(/\//g, '\\')}`;
+    return p;
+  };
+
+  // Last index of either '/' or '\' separator.
+  const lastSepIdx = (s: string): number =>
+    Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+
+  // Normalize a path: collapse separators, resolve '.' and '..'.
+  // Preserves a Windows drive prefix (returns backslash form) or POSIX root.
+  const normalizeWin = (p: string): string => {
+    const hasDrive = /^[A-Za-z]:/.test(p);
+    const drive = hasDrive ? p.slice(0, 2).toUpperCase() : '';
+    const rest = hasDrive ? p.slice(2) : p;
+    const parts = rest.split(/[\\/]+/).filter(Boolean);
+    const out: string[] = [];
+    for (const part of parts) {
+      if (part === '.') continue;
+      if (part === '..') { out.pop(); continue; }
+      out.push(part);
+    }
+    if (hasDrive) return out.length ? `${drive}\\${out.join('\\')}` : `${drive}\\`;
+    return '/' + out.join('/');
+  };
+
+  // Resolve the local working directory to a native fs path.
+  // Falls back to the user's home directory when unknown.
+  const resolveLocalCwd = (raw?: string): string => {
+    let dir = (raw || currentDirectory || '').trim();
+    if (!dir || dir === '~') return localHomeDir || dir;
+    if (dir.startsWith('~/') || dir.startsWith('~\\')) {
+      return normalizeWin((localHomeDir || '') + '\\' + dir.slice(2));
+    }
+    if (/^\/[A-Za-z]\//.test(dir)) dir = msysToWin(dir);
+    return dir;
+  };
+
+  // Parse a typed path token for a LOCAL terminal into { directory, prefix }.
+  // Handles Windows drives (C:\ or C:/), mixed separators, Git-Bash /c/...,
+  // ~ home and relative paths.
+  const parseLocalInputPath = (
+    inputPath: string,
+    explicitCwd?: string,
+  ): { directory: string; prefix: string } => {
+    let cleanPath = inputPath;
+    if ((cleanPath.startsWith('"') && cleanPath.endsWith('"')) ||
+        (cleanPath.startsWith("'") && cleanPath.endsWith("'"))) {
+      cleanPath = cleanPath.slice(1, -1);
+    }
+
+    const baseDir = resolveLocalCwd(explicitCwd);
+
+    if (cleanPath === '~') {
+      return { directory: localHomeDir || baseDir, prefix: '' };
+    }
+
+    const sepIdx = lastSepIdx(cleanPath);
+    if (sepIdx === -1) {
+      // No separator → complete within the current working directory.
+      return { directory: baseDir || (isWindows ? localHomeDir : '/'), prefix: cleanPath };
+    }
+
+    const dirPart = cleanPath.slice(0, sepIdx + 1);
+    const prefix = cleanPath.slice(sepIdx + 1);
+
+    let targetDir: string;
+    if (dirPart.startsWith('~/') || dirPart.startsWith('~\\')) {
+      targetDir = normalizeWin((localHomeDir || '') + '\\' + dirPart.slice(2));
+    } else if (/^\/[A-Za-z]\//.test(dirPart)) {
+      // Git-Bash MSYS absolute path /c/...
+      targetDir = normalizeWin(msysToWin(dirPart));
+    } else if (/^[A-Za-z]:[\\/]/.test(dirPart)) {
+      // Windows absolute path C:\ or C:/
+      targetDir = normalizeWin(dirPart);
+    } else if (dirPart.startsWith('/') || dirPart.startsWith('\\')) {
+      // POSIX absolute path (macOS / Linux local terminals)
+      targetDir = normalizeWin(dirPart);
+    } else {
+      // Relative to the current working directory.
+      targetDir = normalizeWin((baseDir || '') + '\\' + dirPart);
+    }
+    return { directory: targetDir, prefix };
+  };
+
+  // List a directory's entries for completion. Works for both local
+  // (Windows / macOS / Linux) and SSH connections. Directory names are
+  // suffixed with '/' to match sshListDir() behavior.
+  const listDirEntries = async (dirPath: string): Promise<string[]> => {
+    if (isLocal) {
+      const lfs = (window.electron as any)?.localFs;
+      if (!lfs?.list) return [];
+      const target = isWindows ? msysToWin(dirPath) : dirPath;
+      const items = await lfs.list(target);
+      return (items || []).map((it: any) => it.name + (it.isDir ? '/' : ''));
+    }
+    if (!connectionId || !window.electron) return [];
+    return await window.electron.sshListDir(connectionId, dirPath);
+  };
+
   // Find matching files for auto-completion (supports deep matching)
   // Note: supports deep path matching, e.g. cd /home/ and press Tab will match files under /home/
   const findFileCompletionMatches = async (input: string, actualCurrentDir?: string) => {
@@ -677,9 +883,8 @@ const tildeMatch = currentFromState.match(/^~([a-z_][a-z0-9_-]*)/i);
     logger.debug(LOG_MODULE.TERMINAL, 'autocomplete.listing', 'Listing directory for completion', { targetDir, prefix: filePrefix });
 
     try {
-      // Get file list of target directory
-      if (isLocal) return [];
-      const files = await window.electron.sshListDir(connectionId!, targetDir);
+      // Get file list of target directory (local or SSH)
+      const files = await listDirEntries(targetDir);
 
       logger.debug(LOG_MODULE.TERMINAL, 'autocomplete.files_in_dir', 'Files in directory', { targetDir, files });
 
@@ -717,7 +922,26 @@ const tildeMatch = currentFromState.match(/^~([a-z_][a-z0-9_-]*)/i);
       // Only fetch from backend when necessary (currentDirectory is empty or invalid)
       let actualCurrentDir = currentDirectory;
 
-      if (!actualCurrentDir || !actualCurrentDir.startsWith('/')) {
+      if (isLocal) {
+        // Local terminal: prefer the prompt-parsed directory; fall back to
+        // the backend cwd (POSIX) or the home directory (Windows).
+        actualCurrentDir = resolveLocalCwd() || actualCurrentDir;
+        if (!actualCurrentDir && connectionId && window.electron) {
+          try {
+            const pwd = await window.electron.getSessionCwd(connectionId, connectionType);
+            if (pwd) {
+              actualCurrentDir = pwd;
+              setCurrentDirectory(pwd);
+            }
+          } catch {
+            // ignore — handled by home-dir fallback below
+          }
+        }
+        if (!actualCurrentDir && localHomeDir) {
+          actualCurrentDir = localHomeDir;
+        }
+        logger.debug(LOG_MODULE.TERMINAL, 'autocomplete.local_pwd', 'Using local currentDirectory', { actualCurrentDir, isWindows });
+      } else if (!actualCurrentDir || !actualCurrentDir.startsWith('/')) {
         // Only fetch from backend if frontend doesn't have valid directory
         if (connectionId && window.electron) {
         try {
@@ -756,7 +980,7 @@ const tildeMatch = currentFromState.match(/^~([a-z_][a-z0-9_-]*)/i);
       });
     });
 
-    // 2. Collect remote file matches (if SSH connection exists)
+    // 2. Collect file matches (local or SSH)
     if (connectionId && window.electron) {
       try {
         // Extract last parameter (part after space) for matching
@@ -779,12 +1003,18 @@ const tildeMatch = currentFromState.match(/^~([a-z_][a-z0-9_-]*)/i);
             const isDir = file.endsWith('/');
             const prefix = lastSpaceIndex >= 0 ? inputValue.slice(0, lastSpaceIndex + 1) : '';
 
-            // Build full path
+            // Build full path (separator-aware: handles both '/' and '\')
+            const sepI = lastSepIdx(matchTarget);
             let fullPath: string;
-            if (matchTarget.includes('/')) {
-              // If input contains path, need to concatenate directory part
-              const dirPart = matchTarget.slice(0, matchTarget.lastIndexOf('/') + 1);
+            if (sepI >= 0) {
+              // If input contains path, keep the directory part the user typed
+              const dirPart = matchTarget.slice(0, sepI + 1);
               fullPath = dirPart + file;
+              // Match the directory separator the user is using on Windows
+              if (isLocal && isWindows && isDir &&
+                  matchTarget.includes('\\') && !matchTarget.includes('/')) {
+                fullPath = fullPath.slice(0, -1) + '\\';
+              }
             } else {
               // If input doesn't contain path, use filename directly
               fullPath = file;

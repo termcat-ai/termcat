@@ -631,6 +631,7 @@ ipcMain.handle('local-fs-chmod', async (_event, dir: string, name: string, octal
 ipcMain.handle('local-fs-pack', async (_event, dir: string, fileNames: string[]) => localFsProvider.pack(dir, fileNames));
 ipcMain.handle('local-fs-remove-temp', async (_event, tempPath: string) => localFsProvider.removeTempFile(tempPath));
 ipcMain.handle('local-fs-homedir', async () => localFsProvider.getHomedir());
+ipcMain.handle('local-fs-drives', async () => localFsProvider.getDrives());
 ipcMain.handle('local-fs-copy-file', async (_event, src: string, dest: string) => localFsProvider.copyFile(src, dest));
 ipcMain.handle('local-fs-copy-dir', async (_event, src: string, dest: string) => localFsProvider.copyDirectory(src, dest));
 

@@ -70,6 +70,14 @@ export interface IFsHandler {
   /** Get initial path */
   getInitialPath(): Promise<string>;
 
+  /**
+   * Get filesystem root nodes for the directory tree.
+   * Windows local: one node per logical drive (C:\, D:\, ...).
+   * POSIX / SSH: optional — when absent the caller falls back to
+   * getDirectoryTree('/', 1).
+   */
+  getRoots?(): Promise<DirectoryNode[]>;
+
   /** Get terminal current working directory (for syncing file browser path) */
   getTerminalCwd?(): Promise<string | null>;
 }

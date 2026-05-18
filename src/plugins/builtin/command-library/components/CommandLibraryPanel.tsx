@@ -76,19 +76,19 @@ const CommandItem: React.FC<{
   }, []);
 
   return (
-    <div className="relative group" onMouseEnter={adjustTipPosition}>
+    <div className="relative group/cmd" onMouseEnter={adjustTipPosition}>
       <div
         onClick={onSelect}
         className="w-fit min-w-[100px] max-w-[200px] h-10 flex items-center gap-2.5 px-3 border rounded-xl hover:border-primary hover:bg-primary/5 transition-all cursor-pointer shadow-sm overflow-hidden"
         style={{ backgroundColor: 'var(--bg-main)', borderColor: 'var(--border-color)' }}
       >
-        <TerminalIcon className="w-4 h-4 shrink-0 opacity-40 group-hover:opacity-100 group-hover:text-primary transition-all" />
+        <TerminalIcon className="w-4 h-4 shrink-0 opacity-40 group-hover/cmd:opacity-100 group-hover/cmd:text-primary transition-all" />
         <span className="text-[11px] font-bold truncate flex-1 text-left" style={{ color: 'var(--text-main)' }}>{cmd.title}</span>
       </div>
 
       <div
         ref={tipRef}
-        className="absolute top-full pt-1 opacity-0 group-hover:opacity-100 scale-95 group-hover:scale-100 pointer-events-none group-hover:pointer-events-auto transition-all duration-200 z-[100] origin-top-left"
+        className="absolute top-full pt-1 opacity-0 group-hover/cmd:opacity-100 scale-95 group-hover/cmd:scale-100 pointer-events-none group-hover/cmd:pointer-events-auto transition-all duration-200 z-[100] origin-top-left"
       >
         <div className="max-w-[min(500px,80vw)] bg-slate-900 border border-primary/40 rounded-xl px-4 py-2.5 shadow-2xl shadow-primary/40 backdrop-blur-xl flex items-center gap-3">
           <div className="flex items-center gap-2 shrink-0 border-r border-white/10 pr-3 mr-1">

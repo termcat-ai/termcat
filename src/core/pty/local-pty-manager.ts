@@ -30,6 +30,11 @@ interface PtyInstance {
 export class LocalPtyService {
   private instances = new Map<string, PtyInstance>();
 
+  // Current working directory parsed from each PTY's shell prompt.
+  // This is the only reliable cwd source on Windows (no /proc, no lsof).
+  private trackedCwd = new Map<string, string>();
+  private cwdBuffer = new Map<string, string>();
+
   // Warm PTY pool: pre-spawned shell ready for instant use
   private warmPool: Array<{ process: pty.IPty; shell: string; cwd: string; createdAt: number; bufferedData: string[] }> = [];
   private warmPoolSize = 1;
@@ -83,6 +88,32 @@ export class LocalPtyService {
     return { name: path.basename(shell), path: shell, args: ['-l'] };
   }
 
+  /**
+   * Build a "change directory then clear screen" command for a reused
+   * pre-warmed PTY. Syntax differs per shell:
+   *   - PowerShell (5.1 / 7): ';' separator (5.1 lacks '&&'), single-quoted
+   *     LiteralPath, no backslash escaping.
+   *   - cmd.exe: 'cd /d' to also switch drive, '&&', 'cls' to clear.
+   *   - POSIX (bash / sh / zsh / git-bash): original '&&' + 'clear' form.
+   */
+  private buildCdClearCommand(shell: string, cwd: string): string {
+    const lower = shell.toLowerCase();
+    const base = path.basename(lower);
+
+    if (base.includes('powershell') || base.includes('pwsh')) {
+      const escaped = cwd.replace(/'/g, "''");
+      return `Set-Location -LiteralPath '${escaped}'; Clear-Host\r`;
+    }
+
+    if (base === 'cmd' || base === 'cmd.exe') {
+      const escaped = cwd.replace(/"/g, '');
+      return `cd /d "${escaped}" && cls\r`;
+    }
+
+    // POSIX shells — preserve previous behavior.
+    return `cd ${cwd.replace(/(["$`\\!])/g, '\\$1')} && clear\n`;
+  }
+
   create(options: {
     shell?: string;
     args?: string[];
@@ -111,9 +142,10 @@ export class LocalPtyService {
       ptyProcess = warm.process;
       bufferedData = warm.bufferedData;
       ptyProcess.resize(options.cols, options.rows);
-      // cd to target directory and clear screen if cwd differs
+      // cd to target directory and clear screen if cwd differs.
+      // The command syntax is shell-specific (PowerShell / cmd / POSIX).
       if (warm.cwd !== cwd) {
-        ptyProcess.write(`cd ${cwd.replace(/(["$`\\!])/g, '\\$1')} && clear\n`);
+        ptyProcess.write(this.buildCdClearCommand(shell, cwd));
       }
       log.info('pty.warm_claimed', 'Using pre-warmed PTY', {
         pty_id: ptyId, warm_age_ms: Date.now() - warm.createdAt,
@@ -132,6 +164,7 @@ export class LocalPtyService {
     }
 
     ptyProcess.onData((data) => {
+      this.trackCwdFromPrompt(ptyId, data);
       if (!options.webContents.isDestroyed()) {
         options.webContents.send('local-pty-data', ptyId, data);
       }
@@ -195,6 +228,8 @@ export class LocalPtyService {
     log.info('pty.destroying', 'Destroying local PTY', { pty_id: ptyId });
     instance.process.kill();
     this.instances.delete(ptyId);
+    this.trackedCwd.delete(ptyId);
+    this.cwdBuffer.delete(ptyId);
   }
 
   destroyAll(): void {
@@ -276,11 +311,78 @@ export class LocalPtyService {
   }
 
   /**
+   * Parse the working directory from a shell prompt in the PTY data stream.
+   * Supports Windows PowerShell ("PS C:\path>"), cmd ("C:\path>"),
+   * Git-Bash ("...MINGW64 /c/path" or "~") and POSIX prompts.
+   * The result is stored per-pty and surfaced via getCwd().
+   */
+  private trackCwdFromPrompt(ptyId: string, data: string): void {
+    let buf = (this.cwdBuffer.get(ptyId) || '') + data;
+    if (buf.length > 1500) buf = buf.slice(-1500);
+    this.cwdBuffer.set(ptyId, buf);
+
+    const clean = buf
+      .replace(/\x1b\][0-9]*;[^\x07\x1b]*(?:\x07|\x1b\\)?/g, '')
+      .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+      .replace(/\r/g, '');
+    const lines = clean.split('\n');
+    const last = lines[lines.length - 1] || '';
+    const prev = lines.length > 1 ? lines[lines.length - 2] : '';
+
+    let detected: string | null = null;
+
+    // PowerShell: "PS C:\path>"
+    let m = last.match(/PS\s+([A-Za-z]:\\[^\n>]*?)\s*>\s*$/) ||
+            prev.match(/PS\s+([A-Za-z]:\\[^\n>]*?)\s*>\s*$/);
+    if (m) detected = m[1];
+
+    // cmd.exe: "C:\path>"
+    if (!detected) {
+      m = last.match(/(?:^|\n)\s*([A-Za-z]:\\[^\n>]*?)\s*>\s*$/) ||
+          prev.match(/(?:^|\n)\s*([A-Za-z]:\\[^\n>]*?)\s*>\s*$/);
+      if (m) detected = m[1];
+    }
+
+    // Git-Bash / MSYS: "...MINGW64 /c/path" or "...MINGW64 ~"
+    if (!detected) {
+      m = last.match(/(?:MINGW|MSYS|UCRT|CLANG)\d*\s+(~|\/[^\s]*?)\s*$/) ||
+          prev.match(/(?:MINGW|MSYS|UCRT|CLANG)\d*\s+(~|\/[^\s]*?)\s*$/);
+      if (m) {
+        const raw = m[1];
+        if (raw === '~') detected = os.homedir();
+        else {
+          const dm = raw.match(/^\/([A-Za-z])(\/.*)?$/);
+          detected = dm ? `${dm[1].toUpperCase()}:${(dm[2] || '\\').replace(/\//g, '\\')}` : raw;
+        }
+      }
+    }
+
+    // POSIX: "user@host:/path$" / "/path$" / "~$"
+    if (!detected && process.platform !== 'win32') {
+      m = last.match(/[\w.-]+@[\w.-]+:([~/][^\s$#]*)[$#]\s*$/) ||
+          prev.match(/[\w.-]+@[\w.-]+:([~/][^\s$#]*)[$#]\s*$/);
+      if (m) {
+        let p = m[1];
+        if (p === '~' || p.startsWith('~/')) p = os.homedir() + p.slice(1);
+        detected = p;
+      }
+    }
+
+    if (detected) {
+      this.trackedCwd.set(ptyId, detected);
+      const inst = this.instances.get(ptyId);
+      if (inst) inst.cwd = detected;
+    }
+  }
+
+  /**
    * Get PTY subprocess current working directory
    */
   async getCwd(ptyId: string): Promise<string | null> {
     const instance = this.instances.get(ptyId);
     if (!instance) return null;
+    const tracked = this.trackedCwd.get(ptyId) || null;
     const pid = instance.process.pid;
     try {
       if (process.platform === 'darwin') {
@@ -288,16 +390,16 @@ export class LocalPtyService {
         const { execSync } = require('child_process');
         const output = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null`, { encoding: 'utf-8', timeout: 3000 });
         const match = output.match(/\nn(.+)/);
-        return match ? match[1] : null;
+        return match ? match[1] : tracked;
       } else if (process.platform === 'linux') {
         // Linux: read /proc/{pid}/cwd symlink
         return await fs.promises.readlink(`/proc/${pid}/cwd`);
       } else {
-        // Windows: not supported
-        return null;
+        // Windows: no /proc or lsof — use the prompt-parsed cwd.
+        return tracked;
       }
     } catch {
-      return null;
+      return tracked;
     }
   }
 

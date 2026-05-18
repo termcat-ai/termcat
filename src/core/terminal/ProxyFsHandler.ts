@@ -169,6 +169,15 @@ export class ProxyFsHandler implements IFsHandler {
     return this._active.getInitialPath();
   }
 
+  getRoots(): Promise<DirectoryNode[]> {
+    // Local mode → LocalFsHandler.getRoots() returns drive nodes.
+    // Nested SSH (TerminalFsHandler) has no getRoots → reject so the
+    // caller falls back to the POSIX '/' tree.
+    return this._active.getRoots
+      ? this._active.getRoots()
+      : Promise.reject(new Error('getRoots not supported'));
+  }
+
   getTerminalCwd(): Promise<string | null> {
     // In nested mode, prefer OSC-tracked CWD from the user's interactive terminal.
     // The nested handler's getTerminalCwd() runs `pwd` in a private shell which
