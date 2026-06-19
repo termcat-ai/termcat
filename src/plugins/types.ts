@@ -303,9 +303,12 @@ export interface ConfirmOptions {
 
 export interface MessageBoxOptions {
   title?: string;
-  content: string;
-  /** Rendered as preformatted code block if 'pre' / 'code', otherwise plain text. */
+  /** Single-content mode. Mutually exclusive with `tabs`. */
+  content?: string;
+  /** Rendered as preformatted code block if 'pre' / 'code', otherwise plain text. Applies to single-content mode. */
   format?: 'plain' | 'pre' | 'code';
+  /** Multi-tab mode. When provided, `content` is ignored. */
+  tabs?: Array<{ label: string; content: string; format?: 'plain' | 'pre' | 'code' }>;
   closeText?: string;
 }
 

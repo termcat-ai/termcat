@@ -4,13 +4,19 @@
  * channels and replies via `sendUiResponse` so the plugin's Promise resolves.
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { flushSync } from 'react-dom';
 
 type MessageOpts = {
   requestId: string;
   pluginId: string;
-  options: { title?: string; content: string; format?: 'plain' | 'pre' | 'code'; closeText?: string };
+  options: {
+    title?: string;
+    content?: string;
+    format?: 'plain' | 'pre' | 'code';
+    tabs?: Array<{ label: string; content: string; format?: 'plain' | 'pre' | 'code' }>;
+    closeText?: string;
+  };
 };
 
 type ConfirmOpts = {
@@ -88,19 +94,10 @@ export const PluginDialogHost: React.FC = () => {
   if (current.kind === 'message') {
     const { requestId, options } = current.payload;
     return (
-      <ModalShell title={options.title} onClose={() => respond(requestId, undefined)}>
-        <div className="px-4 py-3 overflow-auto flex-1">
-          <MessageBody content={options.content} format={options.format} />
-        </div>
-        <ModalFooter>
-          <button
-            className="px-3 py-1.5 text-xs rounded bg-indigo-500 text-white hover:bg-indigo-600"
-            onClick={() => respond(requestId, undefined)}
-          >
-            {options.closeText ?? '关闭'}
-          </button>
-        </ModalFooter>
-      </ModalShell>
+      <MessageDialog
+        options={options}
+        onClose={() => respond(requestId, undefined)}
+      />
     );
   }
 
@@ -318,6 +315,102 @@ const FormDialog: React.FC<{ payload: FormOpts; respond: (id: string, r: unknown
           onClick={submit}
         >
           {payload.options.submitText ?? '保存'}
+        </button>
+      </ModalFooter>
+    </ModalShell>
+  );
+};
+
+type MsgOpts = MessageOpts['options'];
+
+const MessageDialog: React.FC<{ options: MsgOpts; onClose: () => void }> = ({ options, onClose }) => {
+  const [activeTab, setActiveTab] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tabs = options.tabs;
+
+  const handleCopy = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  }, []);
+
+  if (tabs && tabs.length > 0) {
+    const tab = tabs[activeTab] ?? tabs[0];
+    return (
+      <ModalShell title={options.title} onClose={onClose}>
+        {/* Tab bar */}
+        <div
+          className="flex items-center border-b shrink-0"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-tab)' }}
+        >
+          <div className="flex flex-1">
+            {tabs.map((t, i) => (
+              <button
+                key={i}
+                onClick={() => setActiveTab(i)}
+                className={`px-4 py-2 text-xs transition-colors ${
+                  i === activeTab
+                    ? 'text-indigo-400 border-b-2 border-indigo-400 -mb-px'
+                    : 'text-[var(--text-dim)] hover:text-[var(--text-main)]'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => handleCopy(tab.content)}
+            className="mr-3 px-2 py-1 text-[11px] rounded border transition-colors"
+            style={{
+              borderColor: copied ? 'var(--success-color, #27c93f)' : 'var(--border-color)',
+              color: copied ? 'var(--success-color, #27c93f)' : 'var(--text-dim)',
+            }}
+            title="复制当前 tab 全文"
+          >
+            {copied ? '✓ 已复制' : '复制'}
+          </button>
+        </div>
+        <div className="px-4 py-3 overflow-auto flex-1">
+          <MessageBody content={tab.content} format={tab.format} />
+        </div>
+        <ModalFooter>
+          <button
+            className="px-3 py-1.5 text-xs rounded bg-indigo-500 text-white hover:bg-indigo-600"
+            onClick={onClose}
+          >
+            {options.closeText ?? '关闭'}
+          </button>
+        </ModalFooter>
+      </ModalShell>
+    );
+  }
+
+  // Single-content mode
+  const singleContent = options.content ?? '';
+  return (
+    <ModalShell title={options.title} onClose={onClose}>
+      <div className="px-4 py-3 overflow-auto flex-1">
+        <MessageBody content={singleContent} format={options.format} />
+      </div>
+      <ModalFooter>
+        <button
+          onClick={() => handleCopy(singleContent)}
+          className="px-3 py-1.5 text-xs rounded border transition-colors"
+          style={{
+            borderColor: copied ? 'var(--success-color, #27c93f)' : 'var(--border-color)',
+            color: copied ? 'var(--success-color, #27c93f)' : 'var(--text-dim)',
+          }}
+        >
+          {copied ? '✓ 已复制' : '复制'}
+        </button>
+        <button
+          className="px-3 py-1.5 text-xs rounded bg-indigo-500 text-white hover:bg-indigo-600"
+          onClick={onClose}
+        >
+          {options.closeText ?? '关闭'}
         </button>
       </ModalFooter>
     </ModalShell>
