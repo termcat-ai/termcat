@@ -32,7 +32,7 @@ jobs:
           - os: ubuntu-latest
             arch: x64
             build_cmd: npm run build:linux -- --publish never
-          - os: windows-latest
+          - os: windows-2022
             arch: x64
             build_cmd: npm run build:win -- --publish never
 
