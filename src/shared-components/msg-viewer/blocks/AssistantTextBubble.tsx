@@ -106,7 +106,8 @@ export const AssistantTextBubble: React.FC<Props> = React.memo(({ block, languag
           return (
             <div className="pt-2 border-t border-white/5 flex items-center gap-3 text-[9px]" style={{ color: 'var(--text-dim)' }}>
               {block.tokenUsage!.showTokens !== false && (<><span>{loc.statsInputTokens}: {block.tokenUsage!.inputTokens.toLocaleString()} {loc.statsTokenUnit}</span>
-              <span>{loc.statsOutputTokens}: {block.tokenUsage!.outputTokens.toLocaleString()} {loc.statsTokenUnit}</span></>)}
+              <span>{loc.statsOutputTokens}: {block.tokenUsage!.outputTokens.toLocaleString()} {loc.statsTokenUnit}</span>
+              {(block.tokenUsage!.cacheReadTokens ?? 0) > 0 && <span>{loc.statsCacheRead}: {block.tokenUsage!.cacheReadTokens!.toLocaleString()} {loc.statsTokenUnit}</span>}</>)}
               {block.tokenUsage!.showGems !== false && (<span className="text-amber-500 font-black ml-auto">{loc.statsCostGems}: {block.tokenUsage!.costGems} {loc.statsGemsUnit}</span>)}
             </div>
           );

@@ -27,6 +27,7 @@ export interface TokenUsageInfo {
   outputTokens: number;
   totalTokens: number;
   costGems: number;
+  cacheReadTokens?: number;
   showTokens?: boolean;
   showGems?: boolean;
 }

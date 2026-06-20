@@ -309,6 +309,8 @@ export interface MessageBoxOptions {
   format?: 'plain' | 'pre' | 'code';
   /** Multi-tab mode. When provided, `content` is ignored. */
   tabs?: Array<{ label: string; content: string; format?: 'plain' | 'pre' | 'code' }>;
+  /** Two-level tab mode: level-1 groups each contain level-2 sub-tabs. Takes precedence over `tabs`. */
+  groups?: Array<{ label: string; tabs: Array<{ label: string; content: string; format?: 'plain' | 'pre' | 'code' }> }>;
   closeText?: string;
 }
 

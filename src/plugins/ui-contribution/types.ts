@@ -24,6 +24,8 @@ export interface ActionItem {
   icon?: string;
   label?: string;
   tooltip?: string;
+  /** Optional theme color to tint the icon. When omitted, default dim style applies. */
+  color?: ThemeColor;
 }
 
 /** 右键菜单项 */
@@ -207,7 +209,7 @@ export interface ListData {
      * Inline icon+text badges, rendered on a line below the label.
      * Use this instead of `description` when you want real lucide icons.
      */
-    inlineBadges?: Array<{ icon?: string; text: string; color?: ThemeColor }>;
+    inlineBadges?: Array<{ icon?: string; text: string; color?: ThemeColor; tooltip?: string }>;
   }>;
   selectable?: boolean;
   maxVisibleItems?: number;

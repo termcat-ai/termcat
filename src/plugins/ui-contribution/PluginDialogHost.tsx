@@ -7,6 +7,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { flushSync } from 'react-dom';
 
+type MsgTab = { label: string; content: string; format?: 'plain' | 'pre' | 'code' };
 type MessageOpts = {
   requestId: string;
   pluginId: string;
@@ -14,7 +15,9 @@ type MessageOpts = {
     title?: string;
     content?: string;
     format?: 'plain' | 'pre' | 'code';
-    tabs?: Array<{ label: string; content: string; format?: 'plain' | 'pre' | 'code' }>;
+    tabs?: MsgTab[];
+    /** Two-level tab mode. Takes precedence over `tabs`. */
+    groups?: Array<{ label: string; tabs: MsgTab[] }>;
     closeText?: string;
   };
 };
@@ -323,11 +326,47 @@ const FormDialog: React.FC<{ payload: FormOpts; respond: (id: string, r: unknown
 
 type MsgOpts = MessageOpts['options'];
 
+const CopyButton: React.FC<{ getText: () => string }> = ({ getText }) => {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleClick = useCallback(() => {
+    navigator.clipboard.writeText(getText()).then(() => {
+      setCopied(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  }, [getText]);
+  return (
+    <button
+      onClick={handleClick}
+      className="mr-3 px-2 py-1 text-[11px] rounded border transition-colors shrink-0"
+      style={{
+        borderColor: copied ? 'var(--success-color, #27c93f)' : 'var(--border-color)',
+        color: copied ? 'var(--success-color, #27c93f)' : 'var(--text-dim)',
+      }}
+      title="Copy current tab content"
+    >
+      {copied ? '✓ 已复制' : '复制'}
+    </button>
+  );
+};
+
 const MessageDialog: React.FC<{ options: MsgOpts; onClose: () => void }> = ({ options, onClose }) => {
   const [activeTab, setActiveTab] = useState(0);
+  const [activeGroup, setActiveGroup] = useState(0);
+  const [activeSubTab, setActiveSubTab] = useState(0);
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const groupTabsRef = useRef<HTMLDivElement>(null);
   const tabs = options.tabs;
+  const groups = options.groups;
+
+  // Scroll the active group tab into view whenever it changes.
+  useEffect(() => {
+    if (!groupTabsRef.current) return;
+    const btn = groupTabsRef.current.children[activeGroup] as HTMLElement | undefined;
+    btn?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeGroup]);
 
   const handleCopy = useCallback((text: string) => {
     navigator.clipboard.writeText(text).then(() => {
@@ -337,11 +376,74 @@ const MessageDialog: React.FC<{ options: MsgOpts; onClose: () => void }> = ({ op
     }).catch(() => {});
   }, []);
 
+  // Two-level tab mode: groups (level-1) → sub-tabs (level-2).
+  if (groups && groups.length > 0) {
+    const group = groups[activeGroup] ?? groups[0];
+    const subTab = group.tabs[activeSubTab] ?? group.tabs[0];
+    return (
+      <ModalShell title={options.title} onClose={onClose}>
+        {/* Level-1: group tabs — horizontally scrollable when many groups */}
+        <div
+          ref={groupTabsRef}
+          className="flex shrink-0 border-b overflow-x-auto overflow-y-hidden"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary, var(--bg-tab))' }}
+        >
+          {groups.map((g, i) => (
+            <button
+              key={i}
+              onClick={() => { setActiveGroup(i); setActiveSubTab(0); }}
+              className={`px-4 py-2 text-xs font-medium transition-colors shrink-0 ${
+                i === activeGroup
+                  ? 'text-indigo-400 border-b-2 border-indigo-400 -mb-px'
+                  : 'text-[var(--text-dim)] hover:text-[var(--text-main)]'
+              }`}
+            >
+              {g.label}
+            </button>
+          ))}
+        </div>
+        {/* Level-2: sub-tabs + copy button */}
+        <div
+          className="flex items-center shrink-0 border-b"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-tab)' }}
+        >
+          <div className="flex flex-1">
+            {group.tabs.map((st, i) => (
+              <button
+                key={i}
+                onClick={() => setActiveSubTab(i)}
+                className={`px-4 py-2 text-xs transition-colors ${
+                  i === activeSubTab
+                    ? 'text-indigo-400 border-b-2 border-indigo-400 -mb-px'
+                    : 'text-[var(--text-dim)] hover:text-[var(--text-main)]'
+                }`}
+              >
+                {st.label}
+              </button>
+            ))}
+          </div>
+          <CopyButton getText={() => subTab?.content ?? ''} />
+        </div>
+        <div className="px-4 py-3 overflow-auto flex-1">
+          <MessageBody content={subTab?.content ?? ''} format={subTab?.format} />
+        </div>
+        <ModalFooter>
+          <button
+            className="px-3 py-1.5 text-xs rounded bg-indigo-500 text-white hover:bg-indigo-600"
+            onClick={onClose}
+          >
+            {options.closeText ?? '关闭'}
+          </button>
+        </ModalFooter>
+      </ModalShell>
+    );
+  }
+
   if (tabs && tabs.length > 0) {
     const tab = tabs[activeTab] ?? tabs[0];
     return (
       <ModalShell title={options.title} onClose={onClose}>
-        {/* Tab bar */}
+        {/* Flat tab bar */}
         <div
           className="flex items-center border-b shrink-0"
           style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-tab)' }}
@@ -368,7 +470,7 @@ const MessageDialog: React.FC<{ options: MsgOpts; onClose: () => void }> = ({ op
               borderColor: copied ? 'var(--success-color, #27c93f)' : 'var(--border-color)',
               color: copied ? 'var(--success-color, #27c93f)' : 'var(--text-dim)',
             }}
-            title="复制当前 tab 全文"
+            title="Copy current tab content"
           >
             {copied ? '✓ 已复制' : '复制'}
           </button>

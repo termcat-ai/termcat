@@ -9,6 +9,7 @@ const zh = {
   // Token statistics
   statsInputTokens: '输入',
   statsOutputTokens: '输出',
+  statsCacheRead: '缓存命中',
   statsCostGems: '消耗',
   statsTokenUnit: 'tokens',
   statsGemsUnit: '积分',
@@ -17,6 +18,7 @@ const zh = {
 const en: typeof zh = {
   statsInputTokens: 'In',
   statsOutputTokens: 'Out',
+  statsCacheRead: 'Cache',
   statsCostGems: 'Cost',
   statsTokenUnit: 'tokens',
   statsGemsUnit: 'gems',
@@ -25,6 +27,7 @@ const en: typeof zh = {
 const es: typeof zh = {
   statsInputTokens: 'Entrada',
   statsOutputTokens: 'Salida',
+  statsCacheRead: 'Caché',
   statsCostGems: 'Costo',
   statsTokenUnit: 'tokens',
   statsGemsUnit: 'gemas',

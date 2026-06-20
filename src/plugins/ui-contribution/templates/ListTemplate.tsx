@@ -71,6 +71,7 @@ export const ListTemplate: React.FC<TemplateProps<ListData>> = ({ data, variant,
                   <span
                     key={bi}
                     className={`inline-flex items-center gap-0.5 text-[11px] ${themeColorToText(b.color)}`}
+                    title={b.tooltip}
                   >
                     {BadgeIcon && <BadgeIcon className="w-3 h-3" />}
                     <span className="select-text cursor-text">{b.text}</span>

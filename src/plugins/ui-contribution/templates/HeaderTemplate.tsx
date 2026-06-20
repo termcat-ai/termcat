@@ -2,7 +2,7 @@ import React from 'react';
 import { X } from 'lucide-react';
 import type { TemplateProps, HeaderData } from '../types';
 import { resolveIcon } from '../utils/icon-resolver';
-import { themeColorToText } from '../utils/theme-colors';
+import { themeColorToText, themeColorToHex } from '../utils/theme-colors';
 
 export const HeaderTemplate: React.FC<TemplateProps<HeaderData>> = ({ data, onEvent }) => {
   const Icon = resolveIcon(data.icon);
@@ -28,7 +28,11 @@ export const HeaderTemplate: React.FC<TemplateProps<HeaderData>> = ({ data, onEv
             <button
               key={action.id}
               onClick={() => onEvent?.(action.id, {})}
-              className="text-[var(--text-dim)] hover:text-[var(--text-main)] transition-colors p-0.5"
+              className={action.color
+                ? 'hover:opacity-70 transition-opacity p-0.5'
+                : 'text-[var(--text-dim)] hover:text-[var(--text-main)] transition-colors p-0.5'
+              }
+              style={action.color ? { color: themeColorToHex(action.color) } : undefined}
               title={action.tooltip || action.label}
             >
               {ActionIcon ? <ActionIcon className="w-4 h-4" /> : <X className="w-4 h-4" />}
