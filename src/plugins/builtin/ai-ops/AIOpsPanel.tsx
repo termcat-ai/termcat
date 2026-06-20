@@ -446,11 +446,14 @@ export const AIOpsPluginPanel: React.FC<AIOpsPluginPanelProps> = ({
       return;
     }
 
-    const userBalance = user?.gems ?? 0;
-    const requiredGems = ai.mode === 'agent' ? 2 : 1;
-    if (userBalance < requiredGems) {
-      ai.setShowInsufficientGems(true);
-      return;
+    // Plugin-sourced modes (local agent) run entirely on the client — no gems needed
+    if (currentModeInfo?.source !== 'plugin') {
+      const userBalance = user?.gems ?? 0;
+      const requiredGems = ai.mode === 'agent' ? 2 : 1;
+      if (userBalance < requiredGems) {
+        ai.setShowInsufficientGems(true);
+        return;
+      }
     }
 
     ai.sendMessage(input);

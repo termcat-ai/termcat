@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Blocks, Search, Download, Check, Star, Settings, ShieldCheck, FolderUp, Power, PowerOff, Loader2, AlertCircle, CheckCircle, RefreshCw, Heart, Package, ArrowLeft, Lock, ShoppingCart, Monitor, KeyRound } from 'lucide-react';
 import { useI18n } from '@/base/i18n/I18nContext';
+import { commerceService } from '@/core/commerce/commerceService';
 
 /** Resolve a potentially i18n-ized field: string or { zh, en, es } object */
 function resolveI18nText(value: string | Record<string, string> | undefined, lang: string): string {
@@ -126,17 +127,17 @@ const PluginDetailView: React.FC<{
         )}
       </div>
 
-      {/* License 授权状态（通用：检测插件是否有需要 License 的模式） */}
+      {/* License 授权状态（仅当此插件本身注册了需要 License 的模式时显示） */}
       {(() => {
-        // Find modes registered by this plugin that require license
-        const pluginModes = builtinPluginManager.getExtraModes()
+        // Find modes registered by THIS plugin that require license
+        const pluginModes = builtinPluginManager.getExtraModesForPlugin(plugin.manifest.id)
           .filter(m => m.pluginData?.licenseFeature);
         if (pluginModes.length === 0) return null;
 
         const cache = licenseService.getCache();
         const unlocked = cache?.hasLicense && cache?.activated;
         const firstLicensed = pluginModes[0];
-        const price = firstLicensed.pluginData?.licensePrice;
+        const price = commerceService.getAgentPackPrice();
         const product = firstLicensed.pluginData?.licenseProduct;
         const lockedModeNames = pluginModes.map(m => m.name).join(' + ');
 

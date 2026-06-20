@@ -203,6 +203,11 @@ class BuiltinPluginManager {
     return Array.from(this.extraModes.values()).flat();
   }
 
+  /** Get extra modes registered by a specific plugin */
+  getExtraModesForPlugin(pluginId: string): AIModeInfo[] {
+    return this.extraModes.get(pluginId) || [];
+  }
+
   /** Get plugin-injected extra models */
   getExtraModels(): AIModelInfo[] {
     return Array.from(this.extraModels.values()).flat();

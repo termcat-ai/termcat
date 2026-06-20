@@ -488,7 +488,7 @@ const App: React.FC = () => {
   // --- Listen to open payment modal event ---
   useEffect(() => {
     const disposable = builtinPluginManager.on(AI_OPS_EVENTS.OPEN_PAYMENT, (data: any) => {
-      handleOpenPayment(data?.type || 'gems', data?.amount || 69, data?.tierId);
+      handleOpenPayment(data?.type ?? 'gems', data?.amount ?? 69, data?.tierId);
     });
     return () => disposable.dispose();
   }, [handleOpenPayment]);
