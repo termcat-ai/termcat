@@ -185,8 +185,16 @@ contextBridge.exposeInMainWorld('electron', {
   },
 
   // Desktop notification (system-level, shown when window is not focused)
-  showNotification: (options: { title: string; body: string }) =>
+  showNotification: (options: { title: string; body: string; payload?: { tabId: string } }) =>
     ipcRenderer.invoke('notification:show', options),
+
+  // Notification clicked → main re-focuses the window and forwards the payload
+  // so the renderer can switch to the tab that needs attention.
+  onNotificationActivate: (callback: (payload: { tabId: string }) => void) => {
+    const listener = (_event: any, payload: { tabId: string }) => callback(payload);
+    ipcRenderer.on('notification:activate', listener);
+    return () => ipcRenderer.removeListener('notification:activate', listener);
+  },
 
   // Open external URL
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
@@ -500,7 +508,8 @@ declare global {
       onAuthCallback: (callback: (data: { token: string; user: string }) => void) => () => void;
 
       // Desktop notification
-      showNotification: (options: { title: string; body: string }) => Promise<void>;
+      showNotification: (options: { title: string; body: string; payload?: { tabId: string } }) => Promise<void>;
+      onNotificationActivate: (callback: (payload: { tabId: string }) => void) => () => void;
 
       // Open external URL
       openExternal: (url: string) => Promise<void>;

@@ -22,6 +22,17 @@ export const HeaderTemplate: React.FC<TemplateProps<HeaderData>> = ({ data, onEv
         )}
       </div>
       <div className="flex items-center gap-1">
+        {data.checkbox && (
+          <label className="flex items-center gap-1 mr-1 text-xs text-[var(--text-main)] cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={data.checkbox.checked}
+              onChange={() => onEvent?.(data.checkbox!.id, { checked: !data.checkbox!.checked })}
+              className="accent-indigo-500"
+            />
+            <span>{data.checkbox.label}</span>
+          </label>
+        )}
         {data.actions?.map(action => {
           const ActionIcon = resolveIcon(action.icon);
           return (

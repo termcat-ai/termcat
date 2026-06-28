@@ -7,9 +7,130 @@ import 'xterm/css/xterm.css';
 import { TerminalThemeType } from '@/utils/types';
 import { logger, LOG_MODULE } from '@/base/logger/logger';
 import type { ITerminalBackend } from '@/core/terminal/ITerminalBackend';
+import { terminalActivityStore } from '../terminalActivityStore';
 
 // Use module-level logger for performance optimization (create at module level to avoid passing parameters repeatedly)
 const log = logger.withFields({ module: LOG_MODULE.TERMINAL });
+
+/** Carried scanner state for cross-chunk BEL detection (see scanForBell). */
+interface BellScanState {
+  /** Currently inside an OSC/DCS/SOS/PM/APC string (BEL here is a terminator). */
+  inString: boolean;
+  /** Previous byte was ESC (pending a possible string introducer / ST). */
+  sawEsc: boolean;
+}
+
+/**
+ * Scan a raw output chunk for a real C0 BEL (\x07), the signal a CLI uses to ask
+ * for attention. BELs that merely terminate an OSC/DCS/SOS/PM/APC string (e.g. a
+ * title update "\x1b]0;…\x07", which claude code emits constantly) are NOT bells.
+ *
+ * Unlike a per-chunk regex, this is a stateful VT-style scan: `state` is carried
+ * across onData callbacks, so a string split between two chunks (the `\x07`
+ * terminator arriving separately from its `\x1b]` introducer) never yields a
+ * false bell. This mirrors how xterm / iTerm parse the stream.
+ *
+ * @returns true if at least one real bell was seen in this chunk.
+ */
+function scanForBell(chunk: string, state: BellScanState): boolean {
+  let bell = false;
+  for (let i = 0; i < chunk.length; i++) {
+    const c = chunk.charCodeAt(i);
+    if (state.inString) {
+      if (c === 0x07) { state.inString = false; state.sawEsc = false; }          // BEL = ST
+      else if (c === 0x1b) { state.sawEsc = true; }                              // maybe ESC \
+      else if (state.sawEsc && c === 0x5c) { state.inString = false; state.sawEsc = false; } // ST
+      else { state.sawEsc = false; }
+      continue;
+    }
+    if (state.sawEsc) {
+      // ESC ] / P / X / ^ / _ begin a string; anything else is a non-string escape.
+      if (c === 0x5d || c === 0x50 || c === 0x58 || c === 0x5e || c === 0x5f) state.inString = true;
+      state.sawEsc = false;
+      continue;
+    }
+    if (c === 0x1b) { state.sawEsc = true; }
+    else if (c === 0x07) { bell = true; }                                        // real C0 bell
+  }
+  return bell;
+}
+
+/** Carried scanner state for cross-chunk OSC 9 notification detection. */
+interface OscScanState {
+  /** 0 idle · 1 after ESC · 2 reading OSC code · 3 capturing OSC 9 payload · 4 skipping other OSC. */
+  mode: number;
+  /** Numeric OSC code chars accumulated in mode 2. */
+  code: string;
+  /** OSC 9 payload accumulated in mode 3. */
+  buf: string;
+  /** Inside a string and the previous byte was ESC (pending ST = ESC \). */
+  escPending: boolean;
+}
+
+/** Hard cap on a single OSC 9 payload so a malformed/unterminated sequence can't grow unbounded. */
+const OSC_MSG_MAX = 2048;
+
+/**
+ * Scan a raw output chunk for OSC 9 desktop-notification sequences
+ * (`ESC ] 9 ; <message> BEL|ST`) and return the messages found. This is the
+ * signal claude code / codex emit when they need the user (e.g. "Claude needs
+ * your permission") once they detect an OSC-9-capable terminal.
+ *
+ * Stateful across onData chunks so a sequence split between callbacks is still
+ * captured. ConEmu's `OSC 9 ; <digit> ; …` progress variant is ignored. Runs on
+ * raw onData (not xterm) so it works for buffered background tabs too — exactly
+ * when a notification matters most.
+ */
+function scanForOscNotification(chunk: string, state: OscScanState): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < chunk.length; i++) {
+    const c = chunk.charCodeAt(i);
+    switch (state.mode) {
+      case 0: // idle
+        if (c === 0x1b) state.mode = 1;
+        break;
+      case 1: // after ESC
+        if (c === 0x5d) { state.mode = 2; state.code = ''; }          // ESC ]
+        else if (c === 0x1b) state.mode = 1;                          // ESC ESC
+        else state.mode = 0;
+        break;
+      case 2: // reading numeric OSC code until ';'
+        if (c >= 0x30 && c <= 0x39 && state.code.length < 4) {
+          state.code += String.fromCharCode(c);
+        } else if (c === 0x3b) {                                      // ';'
+          if (state.code === '9') { state.mode = 3; state.buf = ''; state.escPending = false; }
+          else { state.mode = 4; state.escPending = false; }         // other OSC → skip its string
+        } else if (c === 0x1b) state.mode = 1;
+        else state.mode = 0;
+        break;
+      case 3: // capturing OSC 9 payload
+        if (c === 0x07) { emitOsc9(state, out); }                     // BEL terminator
+        else if (state.escPending && c === 0x5c) { emitOsc9(state, out); } // ST = ESC \
+        else if (c === 0x1b) state.escPending = true;
+        else {
+          state.escPending = false;
+          if (state.buf.length < OSC_MSG_MAX) state.buf += String.fromCharCode(c);
+        }
+        break;
+      case 4: // skipping a non-9 OSC string until its terminator
+        if (c === 0x07) state.mode = 0;
+        else if (state.escPending && c === 0x5c) state.mode = 0;
+        else if (c === 0x1b) state.escPending = true;
+        else state.escPending = false;
+        break;
+    }
+  }
+  return out;
+}
+
+/** Finish an OSC 9 payload: emit it as a message unless it's a ConEmu `9;<digit>;` variant. */
+function emitOsc9(state: OscScanState, out: string[]): void {
+  const msg = state.buf.trim();
+  if (msg && !/^\d+;/.test(state.buf)) out.push(msg);
+  state.mode = 0;
+  state.buf = '';
+  state.escPending = false;
+}
 
 interface XTermTerminalProps {
   backend: ITerminalBackend;         // replaces connectionId
@@ -292,6 +413,37 @@ log.warn('xterm.dimensions_error', 'Caught xterm dimensions error, suppressing',
 
     xtermRef.current = terminal;
     fitAddonRef.current = fitAddon;
+
+    // ── Focus reporting (DEC private mode 1004) ──
+    // This is the missing half of the iTerm-style "notify when unfocused"
+    // experience. Programs like `claude code` / `codex` enable mode 1004 and only
+    // ring the terminal bell when they believe the terminal is NOT focused. They
+    // learn that from focus events (CSI I = focus in, CSI O = focus out) that the
+    // emulator must send. We track whether the program enabled 1004, then forward
+    // the OS window's focus/blur to the backend so the program rings on input-needed
+    // while we're in another app — which our BEL detector then turns into a notice.
+    const focusReportRef = { current: false };
+    const csiHandlerSet = terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+      if (params.includes(1004) && !focusReportRef.current) {
+        focusReportRef.current = true;
+        // Report the current focus state immediately on enable.
+        backend.write(document.hasFocus() ? '\x1b[I' : '\x1b[O');
+      }
+      return false; // not fully handled — let xterm process the mode too
+    });
+    const csiHandlerReset = terminal.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
+      if (params.includes(1004)) focusReportRef.current = false;
+      return false;
+    });
+    const handleWindowBlur = () => {
+      if (focusReportRef.current) backend.write('\x1b[O');
+    };
+    const handleWindowFocus = () => {
+      if (focusReportRef.current) backend.write('\x1b[I');
+    };
+    window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('focus', handleWindowFocus);
+
     // Ensure terminal can receive keyboard input
     try {
       if (terminal.element) {
@@ -730,10 +882,32 @@ log.warn('xterm.dimensions_error', 'Caught xterm dimensions error, suppressing',
       });
     }
 
+    // Cross-chunk BEL scanner state. Carried across onData calls so OSC/DCS string
+    // terminators split between chunks are never misread as bells (see scanForBell).
+    const bellScanState: BellScanState = { inString: false, sawEsc: false };
+    // Cross-chunk OSC 9 notification scanner state (see scanForOscNotification).
+    const oscNotifState: OscScanState = { mode: 0, code: '', buf: '', escPending: false };
+
     // Listen for data from backend - display received data, but filter out sequences that may modify font
     // Must register before initShell, ensure to receive MOTD and other initial data
     backend.onData((data) => {
       if (!data || data.length === 0) return;
+
+      // Mark output activity for the tab indicator (edge-debounced inside store).
+      terminalActivityStore.noteOutput(backend.id);
+      // Detect attention signals on the raw stream (works for buffered background
+      // tabs too, where xterm's own parser never runs). Primary: OSC 9 desktop
+      // notifications the CLI emits with a message (e.g. "Claude needs your
+      // permission"). Fallback: a bare BEL with no message. Both scanners are
+      // stateful across chunks; the cheap guards skip plain-text chunks.
+      if (oscNotifState.mode !== 0 || data.indexOf('\x1b') !== -1) {
+        for (const msg of scanForOscNotification(data, oscNotifState)) {
+          terminalActivityStore.noteNotification(backend.id, msg);
+        }
+      }
+      if (bellScanState.inString || data.indexOf('\x1b') !== -1 || data.indexOf('\x07') !== -1) {
+        if (scanForBell(data, bellScanState)) terminalActivityStore.noteBell(backend.id);
+      }
 
       // Cancel health check timer: backend is responding, terminal is alive
       if (healthCheckTimer) {
@@ -863,6 +1037,11 @@ log.warn('xterm.dimensions_error', 'Caught xterm dimensions error, suppressing',
       if (unsubscribeDebug) unsubscribeDebug();
       if (unsubSystemResumed) unsubSystemResumed();
       if (healthCheckTimer) clearTimeout(healthCheckTimer);
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('focus', handleWindowFocus);
+      csiHandlerSet.dispose();
+      csiHandlerReset.dispose();
+      terminalActivityStore.remove(backend.id);
       backend.dispose();
 
       // Clear references, prevent subsequent async operations

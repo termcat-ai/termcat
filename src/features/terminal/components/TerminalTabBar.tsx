@@ -9,6 +9,7 @@ import { X, Plus, ChevronRight, Server, Monitor } from 'lucide-react';
 import { Host, Session, HostGroup } from '@/utils/types';
 import { setActiveDragData } from '@/renderer/App';
 import { useI18n } from '@/base/i18n/I18nContext';
+import type { TabActivityStatus } from '../terminalActivityStore';
 
 interface TerminalTabBarProps {
   sessions: Session[];
@@ -38,6 +39,8 @@ interface TerminalTabBarProps {
   effectiveHostname?: string | null;
   /** Pane dragged to TabBar → extract as new tab */
   onExtractPaneToTab?: (sourceTabId: string, paneId: string) => void;
+  /** Per-tab terminal activity / bell status, keyed by tab.id */
+  tabActivityMap?: Map<string, TabActivityStatus>;
 }
 
 export const TerminalTabBar: React.FC<TerminalTabBarProps> = React.memo(({
@@ -62,6 +65,7 @@ export const TerminalTabBar: React.FC<TerminalTabBarProps> = React.memo(({
   onLocalConnect,
   effectiveHostname,
   onExtractPaneToTab,
+  tabActivityMap,
 }) => {
   const { t } = useI18n();
 
@@ -118,6 +122,7 @@ export const TerminalTabBar: React.FC<TerminalTabBarProps> = React.memo(({
           {sessions.map((session, index) => {
             const isActive = currentSessionId === session.id;
             const isDragOver = dragOverTabId === session.id;
+            const status = tabActivityMap?.get(session.id);
             return (
               <div
                 key={session.id}
@@ -202,6 +207,15 @@ export const TerminalTabBar: React.FC<TerminalTabBarProps> = React.memo(({
                 {isActive && <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full bg-[var(--primary-color)]" />}
                 {/* Right divider */}
                 {!isActive && <div className="absolute right-0 top-2 bottom-2 w-[1px] bg-[var(--border-color)] opacity-40" />}
+                {/* Terminal activity / bell dot — absolutely positioned in the left
+                    padding so it never shifts the tab label. Orange blink (needs
+                    confirmation) takes priority over blue pulse (executing). */}
+                {status && (status.attention || status.activity) && (
+                  <span
+                    aria-hidden
+                    className={`absolute left-1 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full pointer-events-none ${status.attention ? 'tc-tab-dot-attention' : 'tc-tab-dot-activity'}`}
+                  />
+                )}
 
                 {renamingTabId === session.id ? (
                   <input

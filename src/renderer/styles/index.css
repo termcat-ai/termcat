@@ -250,3 +250,40 @@ body {
 .window-control:hover {
   filter: brightness(0.9);
 }
+
+/* Terminal tab activity / bell indicators */
+@keyframes tcTabDotPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+}
+
+@keyframes tcTabDotBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.15;
+  }
+}
+
+/* Executing: program is producing output (blue, gentle pulse) */
+.tc-tab-dot-activity {
+  background-color: #3b82f6;
+  box-shadow: 0 0 4px rgba(59, 130, 246, 0.7);
+  animation: tcTabDotPulse 1.4s ease-in-out infinite;
+}
+
+/* Needs confirmation: terminal bell received (amber, faster blink) */
+.tc-tab-dot-attention {
+  background-color: #f59e0b;
+  box-shadow: 0 0 5px rgba(245, 158, 11, 0.9);
+  animation: tcTabDotBlink 0.9s steps(1, end) infinite;
+}

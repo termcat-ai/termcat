@@ -138,6 +138,7 @@ export const zh = {
   // 终端
   terminal: {
     title: '终端',
+    attentionFallback: '有程序请求确认',
     connecting: '正在连接...',
     connected: '已连接',
     disconnected: '已断开',

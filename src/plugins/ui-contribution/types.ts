@@ -121,6 +121,8 @@ export interface HeaderData {
   subtitle?: string;
   icon?: string;
   badge?: { text: string; color?: ThemeColor };
+  /** Optional inline checkbox shown before the action icons. Emits its `id` as the event with `{ checked }`. */
+  checkbox?: { id: string; label: string; checked: boolean };
   actions?: ActionItem[];
 }
 

@@ -232,6 +232,7 @@ export const FormTemplate: React.FC<TemplateProps<FormData>> = ({ data, variant,
               />
             </button>
           )}
+
         </div>
       ))}
 

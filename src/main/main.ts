@@ -271,10 +271,10 @@ ipcMain.handle('window:create', (_event, options?: { hostToConnect?: any; localT
 });
 
 // ── Desktop Notification IPC ──
-ipcMain.handle('notification:show', (event, options: { title: string; body: string }) => {
+ipcMain.handle('notification:show', (event, options: { title: string; body: string; payload?: { tabId: string } }) => {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);
-  // Only show notification when window is not focused
-  if (senderWindow && !senderWindow.isDestroyed() && !senderWindow.isFocused()) {
+  // Only show notification when the window is not focused (iTerm-style).
+  if (senderWindow && !senderWindow.isDestroyed() && !senderWindow.isFocused() && Notification.isSupported()) {
     const notification = new Notification({
       title: options.title,
       body: options.body,
@@ -284,6 +284,10 @@ ipcMain.handle('notification:show', (event, options: { title: string; body: stri
         if (senderWindow.isMinimized()) senderWindow.restore();
         senderWindow.show();
         senderWindow.focus();
+        // Forward the payload so the renderer can switch to the relevant tab.
+        if (options.payload) {
+          senderWindow.webContents.send('notification:activate', options.payload);
+        }
       }
     });
     notification.show();

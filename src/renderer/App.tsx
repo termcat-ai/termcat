@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef, useReducer } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, useReducer, useSyncExternalStore } from 'react';
 import { Sidebar } from '@/features/shared/components/Sidebar';
 import { Dashboard } from '@/features/dashboard/components/Dashboard';
 import { TerminalTabBar } from '@/features/terminal/components/TerminalTabBar';
@@ -36,6 +36,7 @@ import { PaneDropZone } from '@/features/terminal/components/PaneDropZone';
 import { PaneSlot } from '@/features/terminal/components/PaneSlot';
 import { TerminalHostLayer } from '@/features/terminal/components/TerminalHostLayer';
 import { findPaneNode, countPanes, collectAllPaneIds } from '@/features/terminal/utils/split-layout';
+import { terminalActivityStore, type TabActivityStatus } from '@/features/terminal/terminalActivityStore';
 import type { DropEdge } from '@/features/terminal/types';
 import { useHostManager } from '@/features/dashboard/hooks/useHostManager';
 import { useUserAuth } from '@/features/auth/hooks/useUserAuth';
@@ -763,6 +764,92 @@ const App: React.FC = () => {
     });
   }, [tabManager.tabs, tabManager.activeSessions]);
 
+  // ── Terminal activity / bell indicators (iTerm-style) ──
+  // Subscribe to the per-backend output-stream status store. useSyncExternalStore
+  // re-renders only on status edges (idle↔active, bell), never per output chunk.
+  const activityVersion = useSyncExternalStore(
+    terminalActivityStore.subscribe,
+    terminalActivityStore.getVersion,
+  );
+
+  // Resolve a tab's panes → their session backend ids. Shared by the helpers below.
+  const collectTabBackendIds = useCallback((tabId: string): string[] => {
+    const tab = tabManager.tabs.find(t => t.id === tabId);
+    if (!tab) return [];
+    const ids: string[] = [];
+    for (const paneId of collectAllPaneIds(tab.layout)) {
+      const pane = findPaneNode(tab.layout, paneId);
+      const session = pane ? tabManager.activeSessions.find(s => s.id === pane.sessionId) : null;
+      if (session?.connectionId) ids.push(session.connectionId);
+    }
+    return ids;
+  }, [tabManager.tabs, tabManager.activeSessions]);
+
+  // Aggregate per-backend status up to per-tab status (a tab is busy if ANY of
+  // its panes' sessions are). Keyed by tab.id to match TerminalTabBar entries.
+  const tabActivityMap = useMemo(() => {
+    const map = new Map<string, TabActivityStatus>();
+    for (const tab of tabManager.tabs) {
+      let activity = false;
+      let attention = false;
+      for (const backendId of collectTabBackendIds(tab.id)) {
+        const st = terminalActivityStore.getState(backendId);
+        if (st.attention) attention = true;
+        if (st.activity) activity = true;
+      }
+      if (activity || attention) map.set(tab.id, { activity, attention });
+    }
+    return map;
+  }, [activityVersion, tabManager.tabs, collectTabBackendIds]);
+
+  // Clear "needs confirmation" once the user views the tab that has it.
+  useEffect(() => {
+    if (!tabManager.currentTabId) return;
+    for (const backendId of collectTabBackendIds(tabManager.currentTabId)) {
+      terminalActivityStore.acknowledge(backendId);
+    }
+  }, [tabManager.currentTabId, activityVersion, collectTabBackendIds]);
+
+  // Resolve a backend id to its host/tab and post an OS notification (main
+  // suppresses it while the window is focused). Clicking it switches to that tab.
+  const notifyTerminalAttention = useCallback((backendId: string, body: string) => {
+    const session = tabManager.activeSessions.find(s => s.connectionId === backendId);
+    if (!session) return;
+    const tab = tabManager.tabs.find(tb =>
+      collectAllPaneIds(tb.layout).some(pid => findPaneNode(tb.layout, pid)?.sessionId === session.id),
+    );
+    if (!tab) return;
+    // iTerm-style: session name as the title, the program's message as the body.
+    const hostName = session.customName || session.host?.name || t.terminal.title;
+    window.electron?.showNotification?.({
+      title: hostName,
+      body,
+      payload: { tabId: tab.id },
+    });
+  }, [tabManager.tabs, tabManager.activeSessions, t]);
+
+  // Attention signal → OS notification. Primary source is an OSC 9 desktop
+  // notification the CLI emits when it needs input (e.g. "Claude needs your
+  // permission"), carrying its own message; bare terminal bells are the fallback
+  // and use a generic message. Matching iTerm — no output-stall heuristic, which
+  // would fire on every pause and bury the real signal in noise.
+  useEffect(() => {
+    return terminalActivityStore.onNotify((backendId, message) => {
+      notifyTerminalAttention(backendId, message ?? t.terminal.attentionFallback);
+    });
+  }, [notifyTerminalAttention, t]);
+
+  // Notification clicked (window was unfocused) → switch to the relevant tab.
+  useEffect(() => {
+    const off = window.electron?.onNotificationActivate?.((payload) => {
+      if (payload?.tabId) {
+        tabManager.setCurrentTabId(payload.tabId);
+        setActiveView('terminal');
+      }
+    });
+    return () => { off?.(); };
+  }, [tabManager.setCurrentTabId]);
+
   if (userAuth.showLogin) return (
     <>
       <style>{settings.themeStyles}</style>
@@ -840,6 +927,7 @@ const App: React.FC = () => {
             onLocalConnect={() => tabManager.handleLocalConnect()}
             effectiveHostname={activeSession ? effectiveHostnameMap[activeSession.id] : null}
             onExtractPaneToTab={(sourceTabId, paneId) => tabManager.extractPaneToTab(sourceTabId, paneId)}
+            tabActivityMap={tabActivityMap}
           />
         )}
 

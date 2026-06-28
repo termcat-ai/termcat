@@ -140,6 +140,7 @@ export const en: TranslationKeys = {
   // Terminal
   terminal: {
     title: 'Terminal',
+    attentionFallback: 'A program needs your attention',
     connecting: 'Connecting...',
     connected: 'Connected',
     disconnected: 'Disconnected',

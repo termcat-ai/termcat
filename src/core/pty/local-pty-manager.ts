@@ -416,7 +416,14 @@ export class LocalPtyService {
     cleanEnv.LANG = cleanEnv.LANG || 'en_US.UTF-8';
     cleanEnv.LC_CTYPE = cleanEnv.LC_CTYPE || 'UTF-8';
     cleanEnv.TERM = 'xterm-256color';
-    cleanEnv.TERM_PROGRAM = 'TermCat';
+    // Present as iTerm2 so CLIs (claude code / codex) auto-detect a terminal that
+    // supports OSC 9 desktop notifications and emit them. TermCat's onData parser
+    // turns those OSC 9 sequences into native notifications. xterm.js ignores the
+    // iTerm2-proprietary sequences this identity may also invite (OSC 1337 etc.).
+    cleanEnv.TERM_PROGRAM = 'iTerm.app';
+    cleanEnv.TERM_PROGRAM_VERSION = '3.5.0';
+    cleanEnv.LC_TERMINAL = 'iTerm2';
+    cleanEnv.LC_TERMINAL_VERSION = '3.5.0';
     if (extra) Object.assign(cleanEnv, extra);
     return cleanEnv;
   }
